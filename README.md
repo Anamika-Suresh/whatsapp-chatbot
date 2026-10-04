@@ -1,4 +1,4 @@
-# 🤖 Anam - WhatsApp AI Assistant
+#  Anam - WhatsApp AI Assistant
 
 An intelligent, personal WhatsApp assistant built with **Node.js**, **[Baileys](https://github.com/WhiskeySockets/Baileys)**, and **[Google Gemini AI](https://aistudio.google.com)** (`gemini-3.6-flash`).
 
@@ -6,18 +6,18 @@ Designed by **Anamika Suresh**.
 
 ---
 
-## ✨ Features
+##  Features
 
-- 💬 **Wake-Word Invocation**: Activates on `"Hey Anam"` and holds active continuous chat sessions until you say `"bye"`.
-- ⏰ **Clock Alarms**: Set exact time-of-day alarms (e.g., `alarm 07:30 Wake up`).
-- 🚨 **Timed Reminders**: Set countdown delay timers (e.g., `remind me in 10 minutes to drink water`).
-- 📋 **To-Do List Manager**: Persistently stores checklist tasks in local JSON (`add buy milk`, `show tasks`, `done 1`).
-- 🧠 **Conversational Memory**: Automatically condenses older conversation context using Gemini AI.
-- 🔄 **Auto-Reconnect**: Smooth connection recovery and automatic QR code refresh if session expires.
+-  **Wake-Word Invocation**: Activates on `"Hey Anam"` and holds active continuous chat sessions until you say `"bye"`.
+-  **Clock Alarms**: Set exact time-of-day alarms (e.g., `alarm 07:30 Wake up`).
+-  **Timed Reminders**: Set countdown delay timers (e.g., `remind me in 10 minutes to drink water`).
+-  **To-Do List Manager**: Persistently stores checklist tasks in local JSON (`add buy milk`, `show tasks`, `done 1`).
+-  **Conversational Memory**: Automatically condenses older conversation context using Gemini AI.
+-  **Auto-Reconnect**: Smooth connection recovery and automatic QR code refresh if session expires.
 
 ---
 
-## 🛠️ Project Structure
+##  Project Structure
 
 ```text
 whatsapp-chatbot/
@@ -31,7 +31,7 @@ whatsapp-chatbot/
 
 ---
 
-## 🚀 Quick Start Guide
+##  Quick Start Guide
 
 ### 1. Prerequisites
 - **Node.js** (v18 or higher recommended)
@@ -82,21 +82,19 @@ Once connected, your terminal will display:
 
 ---
 
-## 💬 WhatsApp Command Cheatsheet
+##  WhatsApp Command Cheatsheet
 
 | Command Type | What to Type in WhatsApp | Response |
 | :--- | :--- | :--- |
-| **Start Bot Session** | `Hey Anam` | 👋 *Hey! I'm listening...* |
-| **Set Timer** | `Hey Anam remind me in 5 minutes to stretch` | ⏰ Reminder set for *5 min(s)* |
-| **Set Alarm** | `Hey Anam alarm 07:30 wake up` | ⏰ Alarm set for *07:30* |
-| **Add To-Do Task** | `Hey Anam add buy groceries to list` | ✅ Added to list: *"buy groceries"* |
-| **View Tasks** | `Hey Anam show tasks` | 📝 *Your Tasks:* 1. buy groceries |
-| **Complete Task** | `Hey Anam done 1` | 🎉 Completed & removed: *"buy groceries"* |
-| **Clear Memory** | `!clear` or `clear memory` | 🧹 *Memory cleared & session reset!* |
-| **Close Session** | `bye` or `exit` | 👋 *Session ended!* |
+| **Start Bot Session** | `Hey Anam` |  *Hey! I'm listening...* |
+| **Set Timer** | `Hey Anam remind me in 5 minutes to stretch` |  Reminder set for *5 min(s)* |
+| **Set Alarm** | `Hey Anam alarm 07:30 wake up` |  Alarm set for *07:30* |
+| **Add To-Do Task** | `Hey Anam add buy groceries to list` |  Added to list: *"buy groceries"* |
+| **View Tasks** | `Hey Anam show tasks` |  *Your Tasks:* 1. buy groceries |
+| **Complete Task** | `Hey Anam done 1` |  Completed & removed: *"buy groceries"* |
+| **Clear Memory** | `!clear` or `clear memory` |  *Memory cleared & session reset!* |
+| **Close Session** | `bye` or `exit` |  *Session ended!* |
 
 ---
 
-## 📜 License
-
-Distributed under the **ISC License**. Created by [Anamika Suresh](https://github.com/Anamika-Suresh).
+ Created by [Anamika Suresh](https://github.com/Anamika-Suresh).
