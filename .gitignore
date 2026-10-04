@@ -1,0 +1,19 @@
+﻿# WhatsApp Session Credentials (CRITICAL: Never share or push)
+auth_info/
+auth_info_baileys/
+
+# API Keys & Secrets
+.env
+.env.local
+
+# Personal User Data
+todos.json
+
+# Node Dependencies
+node_modules/
+
+# Logs & OS artifacts
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
