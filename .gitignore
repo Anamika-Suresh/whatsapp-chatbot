@@ -1,4 +1,4 @@
-﻿# WhatsApp Session Credentials (CRITICAL: Never share or push)
+# WhatsApp Session Credentials (CRITICAL: Never share or push)
 auth_info/
 auth_info_baileys/
 
@@ -8,6 +8,8 @@ auth_info_baileys/
 
 # Personal User Data
 todos.json
+reminders.json
+media/
 
 # Node Dependencies
 node_modules/

@@ -1,4 +1,4 @@
-#  Anam - WhatsApp AI Assistant
+# 🤖 Anam - WhatsApp AI Assistant
 
 An intelligent, personal WhatsApp assistant built with **Node.js**, **[Baileys](https://github.com/WhiskeySockets/Baileys)**, and **[Google Gemini AI](https://aistudio.google.com)** (`gemini-3.6-flash`).
 
@@ -6,18 +6,18 @@ Designed by **Anamika Suresh**.
 
 ---
 
-##  Features
+## ✨ Features
 
--  **Wake-Word Invocation**: Activates on `"Hey Anam"` and holds active continuous chat sessions until you say `"bye"`.
--  **Clock Alarms**: Set exact time-of-day alarms (e.g., `alarm 07:30 Wake up`).
--  **Timed Reminders**: Set countdown delay timers (e.g., `remind me in 10 minutes to drink water`).
--  **To-Do List Manager**: Persistently stores checklist tasks in local JSON (`add buy milk`, `show tasks`, `done 1`).
--  **Conversational Memory**: Automatically condenses older conversation context using Gemini AI.
--  **Auto-Reconnect**: Smooth connection recovery and automatic QR code refresh if session expires.
+- 💬 **Wake-Word Invocation**: Activates on `"Hey Anam"` and holds active continuous chat sessions until you say `"bye"`.
+- ⏰ **Clock Alarms with Name & Description**: Set exact time-of-day alarms with custom names and detailed descriptions (e.g., `4pm reminder: name: Website analysis, description: Analyses given website and extract details`).
+- 🚨 **Timed Reminders**: Set countdown delay timers with structured name and details (e.g., `remind me in 10 minutes: name: Drink water, description: Stay hydrated`).
+- 📋 **To-Do List Manager**: Persistently stores checklist tasks with optional detailed descriptions (`add Website analysis to list with description: Analyses given website`, `show tasks`, `done 1`).
+- 🧠 **Conversational Memory**: Automatically condenses older conversation context using Gemini AI.
+- 🔄 **Auto-Reconnect**: Smooth connection recovery and automatic QR code refresh if session expires.
 
 ---
 
-##  Project Structure
+## 🛠️ Project Structure
 
 ```text
 whatsapp-chatbot/
@@ -31,7 +31,7 @@ whatsapp-chatbot/
 
 ---
 
-##  Quick Start Guide
+## 🚀 Quick Start Guide
 
 ### 1. Prerequisites
 - **Node.js** (v18 or higher recommended)
@@ -82,19 +82,21 @@ Once connected, your terminal will display:
 
 ---
 
-##  WhatsApp Command Cheatsheet
+## 💬 WhatsApp Command Cheatsheet
 
-| Command Type | What to Type in WhatsApp | Response |
+| Command Type | What to Type in WhatsApp | Response Format |
 | :--- | :--- | :--- |
-| **Start Bot Session** | `Hey Anam` |  *Hey! I'm listening...* |
-| **Set Timer** | `Hey Anam remind me in 5 minutes to stretch` |  Reminder set for *5 min(s)* |
-| **Set Alarm** | `Hey Anam alarm 07:30 wake up` |  Alarm set for *07:30* |
-| **Add To-Do Task** | `Hey Anam add buy groceries to list` |  Added to list: *"buy groceries"* |
-| **View Tasks** | `Hey Anam show tasks` |  *Your Tasks:* 1. buy groceries |
-| **Complete Task** | `Hey Anam done 1` |  Completed & removed: *"buy groceries"* |
-| **Clear Memory** | `!clear` or `clear memory` |  *Memory cleared & session reset!* |
-| **Close Session** | `bye` or `exit` |  *Session ended!* |
+| **Start Bot Session** | `Hey Anam` | 👋 *Hey! I'm listening...* |
+| **Set Alarm (Name & Desc)** | `Hey Anam 4pm reminder: name: Website analysis, description: Analyses given website and extract details` | ⏰ Alarm set for *16:00*:<br>📌 *Name:* Website analysis<br>📝 *Description:* Analyses given website... |
+| **Set Timer Reminder** | `Hey Anam remind me in 5 minutes name: Drink Water description: Stay hydrated` | ⏰ Reminder set for *5 min(s)*:<br>📌 *Name:* Drink Water<br>📝 *Description:* Stay hydrated |
+| **Add To-Do Task** | `Hey Anam add Website analysis to list with description: Analyses given website` | ✅ Added to list: *"Website analysis"* |
+| **View Tasks** | `Hey Anam show tasks` | 📝 *Your Tasks:*<br>1. 📌 *Website analysis*<br>   📝 _Analyses given website_ |
+| **Complete Task** | `Hey Anam done 1` | 🎉 Completed & removed: *"Website analysis"* |
+| **Clear Memory** | `!clear` or `clear memory` | 🧹 *Memory cleared & session reset!* |
+| **Close Session** | `bye` or `exit` | 👋 *Session ended!* |
 
 ---
 
- Created by [Anamika Suresh](https://github.com/Anamika-Suresh).
+## 📜 License
+
+Distributed under the **ISC License**. Created by [Anamika Suresh](https://github.com/Anamika-Suresh).
