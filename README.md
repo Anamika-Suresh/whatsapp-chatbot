@@ -82,7 +82,7 @@ Once connected, your terminal will display:
 
 ---
 
-## 💬 WhatsApp Command Cheatsheet
+##  WhatsApp Command Cheatsheet
 
 | Command Type | What to Type in WhatsApp | Response Format |
 | :--- | :--- | :--- |
