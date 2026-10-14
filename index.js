@@ -5,8 +5,60 @@ import pino from "pino";
 import fs from "fs";
 import path from "path";
 import dotenv from "dotenv";
+import { execSync } from "child_process";
+import db from "./db.js";
 
 dotenv.config();
+
+// Single Instance Mutex: Ensure only ONE bot process runs at any time
+const PID_FILE = path.join(process.cwd(), "bot.pid");
+function acquireInstanceLock() {
+    try {
+        if (fs.existsSync(PID_FILE)) {
+            const oldPid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
+            if (!isNaN(oldPid) && oldPid !== process.pid) {
+                try {
+                    process.kill(oldPid, 0); // Check if process is alive
+                    console.log(`[Instance Lock] Found previous bot instance running (PID ${oldPid}). Terminating it to prevent WhatsApp session conflicts...`);
+                    try {
+                        execSync(`taskkill /F /PID ${oldPid}`, { stdio: "ignore" });
+                    } catch {
+                        try { process.kill(oldPid, "SIGTERM"); } catch {}
+                    }
+                } catch {
+                    // Stale PID file, process already dead
+                }
+            }
+        }
+        fs.writeFileSync(PID_FILE, String(process.pid), "utf-8");
+    } catch (e) {
+        console.warn("[Instance Lock] Notice:", e.message);
+    }
+}
+acquireInstanceLock();
+
+process.on("exit", () => {
+    try {
+        if (fs.existsSync(PID_FILE)) {
+            const current = fs.readFileSync(PID_FILE, "utf-8").trim();
+            if (current === String(process.pid)) {
+                fs.unlinkSync(PID_FILE);
+            }
+        }
+    } catch {}
+});
+
+// Anti-Crash Global Protections (Prevents network glitches / ECONNRESET from killing the bot)
+process.on("unhandledRejection", (reason) => {
+    console.warn("[Anti-Crash] Caught Unhandled Rejection (Prevented Crash):", reason?.message || reason);
+});
+
+process.on("uncaughtException", (err) => {
+    console.error("[Anti-Crash] Caught Uncaught Exception (Prevented Crash):", err?.message || err);
+    if (err?.code === "ECONNRESET" || err?.message === "terminated" || err?.cause?.code === "ECONNRESET") {
+        console.warn("[Anti-Crash] Handled network socket ECONNRESET / terminated fetch safely.");
+    }
+});
 
 // 1. AI Initialization
 const geminiApiKey = process.env.GEMINI_API_KEY || "";
@@ -47,12 +99,18 @@ if (!fs.existsSync(MEDIA_DIR)) {
 // 3. Sent Messages ID Tracker (Prevents self-chat infinite loops)
 const sentMessageIds = new Set();
 async function sendReply(sock, sender, content) {
-    const sent = await sock.sendMessage(sender, content);
-    if (sent?.key?.id) {
-        sentMessageIds.add(sent.key.id);
-        setTimeout(() => sentMessageIds.delete(sent.key.id), 5 * 60 * 1000);
+    if (!sock || !sender) return null;
+    try {
+        const sent = await sock.sendMessage(sender, content);
+        if (sent?.key?.id) {
+            sentMessageIds.add(sent.key.id);
+            setTimeout(() => sentMessageIds.delete(sent.key.id), 5 * 60 * 1000);
+        }
+        return sent;
+    } catch (err) {
+        console.error(`[Send Reply Error] Could not send message to ${sender}:`, err?.message || err);
+        return null;
     }
-    return sent;
 }
 
 // 4. Conversational Memory & Active Session Tracker
@@ -237,6 +295,67 @@ function cleanPunctuation(str) {
     return res;
 }
 
+function extractTaskNameAndDesc(rawStr) {
+    let clean = cleanPunctuation(rawStr);
+    if (!clean) return null;
+
+    // Check if there is description separated by " - ", ":", "with description", "desc:"
+    const descMatch = clean.match(/^(.*?)\s*(?:[-:]|\bdesc(?:ription)?[:\-]?)\s*(.+)$/i);
+    if (descMatch && descMatch[1].trim() && descMatch[2].trim()) {
+        return {
+            name: cleanPunctuation(descMatch[1]),
+            description: cleanPunctuation(descMatch[2])
+        };
+    }
+    return { name: clean, description: "" };
+}
+
+function parseTaskCommand(text) {
+    if (!text) return null;
+    let raw = text.trim();
+
+    // Do not confuse with timed reminders or queries
+    const hasTimeKeyword = /\b(?:at\s+\d|in\s+\d+\s*(?:sec|min|hour)|tomorrow\s+at)\b/i.test(raw);
+    if (hasTimeKeyword && /\b(?:remind|reminder)\b/i.test(raw)) {
+        return null;
+    }
+    if (/^\s*(?:show|what|list|view|display|get)\b/i.test(raw)) {
+        return null;
+    }
+
+    // 1. "add <something> to [my/the] list/todo/checklist"
+    const addToListMatch = raw.match(/^\s*(?:hey\s+anam[,:\s]*)?add\s+(.+?)\s+to\s+(?:my\s+|the\s+)?(?:list|tasks?|to-?dos?|checklist)\s*$/i);
+    if (addToListMatch) {
+        return extractTaskNameAndDesc(addToListMatch[1]);
+    }
+
+    // 2. "add to [my/the] list/todo/checklist: <something>"
+    const addToListPrefixMatch = raw.match(/^\s*(?:hey\s+anam[,:\s]*)?add\s+to\s+(?:my\s+|the\s+)?(?:list|tasks?|to-?dos?|checklist)\s*[:\-]?\s*(.+)$/i);
+    if (addToListPrefixMatch) {
+        return extractTaskNameAndDesc(addToListPrefixMatch[1]);
+    }
+
+    // 3. "add task/todo/to-do: <something>" or "add task/todo <something>"
+    const addTaskMatch = raw.match(/^\s*(?:hey\s+anam[,:\s]*)?add\s+(?:task|to-?do|item)\s*[:\-]?\s*(.+)$/i);
+    if (addTaskMatch) {
+        return extractTaskNameAndDesc(addTaskMatch[1]);
+    }
+
+    // 4. "task: <something>", "task <something>", "new task: <something>", "new task <something>", "checklist: <something>"
+    const prefixMatch = raw.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:new\s+task|task|to-?do|checklist)\s*[:\-]?\s+(.+)$/i);
+    if (prefixMatch) {
+        return extractTaskNameAndDesc(prefixMatch[1]);
+    }
+
+    // 5. "add <something>" (general, e.g. "add buy groceries", "add finish report")
+    const generalAddMatch = raw.match(/^\s*(?:hey\s+anam[,:\s]*)?add\s+(?!me\b|a\s+reminder\b|reminder\b)(.+)$/i);
+    if (generalAddMatch) {
+        return extractTaskNameAndDesc(generalAddMatch[1]);
+    }
+
+    return null;
+}
+
 function parseFreeFormReminder(text) {
     if (!text) return null;
     let raw = text.trim();
@@ -419,6 +538,14 @@ function scheduleReminderTimer(sock, rem) {
     const delayMs = rem.targetTimestamp - now;
 
     if (delayMs <= 0) {
+        // Skip reminders that expired more than 15 minutes ago to avoid spamming on restart
+        if (now - rem.targetTimestamp > 15 * 60 * 1000) {
+            console.log(`[Reminders] Skipping expired reminder: "${rem.name}" (due ${Math.round((now - rem.targetTimestamp) / 60000)}m ago)`);
+            if (rem.id && !isNaN(Number(rem.id))) {
+                try { db.markReminderSent(Number(rem.id)); } catch (e) {}
+            }
+            return;
+        }
         triggerReminder(sock, rem);
         return;
     }
@@ -431,12 +558,33 @@ function scheduleReminderTimer(sock, rem) {
 }
 
 async function triggerReminder(sock, rem) {
+    if (rem.id && !isNaN(Number(rem.id))) {
+        try {
+            const existing = db.getReminderById(Number(rem.id));
+            if (!existing) {
+                console.log(`[Reminders] Reminder #${rem.id} was deleted from database. Skipping trigger.`);
+                activeTimers.delete(rem.id);
+                return;
+            }
+            if (existing.status !== "pending") {
+                console.log(`[Reminders] Reminder #${rem.id} is already marked '${existing.status}'. Skipping duplicate trigger.`);
+                activeTimers.delete(rem.id);
+                return;
+            }
+            db.markReminderSent(Number(rem.id));
+            try {
+                fs.writeFileSync(path.join(process.cwd(), ".reminders_sync"), String(Date.now()));
+            } catch (e) {}
+        } catch (e) {
+            console.error("[Trigger DB Error]:", e.message);
+        }
+    }
     const reminders = loadReminders();
     const item = reminders.find(r => r.id === rem.id);
-    if (!item || item.status === "sent") return;
-
-    item.status = "sent";
-    saveReminders(reminders);
+    if (item) {
+        item.status = "sent";
+        saveReminders(reminders);
+    }
     activeTimers.delete(rem.id);
 
     let fallbackText = "";
@@ -449,7 +597,7 @@ async function triggerReminder(sock, rem) {
         fallbackText = "Just a reminder!";
     }
 
-    let textToSend = (item.message && item.message.trim()) ? item.message.trim() : fallbackText;
+    let textToSend = (item && item.message && item.message.trim()) ? item.message.trim() : (rem.message || fallbackText);
 
     if (rem.mediaPath) {
         if (!fs.existsSync(rem.mediaPath)) {
@@ -458,7 +606,7 @@ async function triggerReminder(sock, rem) {
         }
 
         let mediaCaption = textToSend;
-        if (isGenericName && !rem.description && !item.message) {
+        if (isGenericName && !rem.description && !item?.message) {
             mediaCaption = undefined;
         }
 
@@ -485,10 +633,75 @@ async function triggerReminder(sock, rem) {
     }
 }
 
+function syncDatabaseReminders(sock) {
+    if (!sock) return;
+    try {
+        const dbPending = db.getPendingReminders();
+        const pendingIds = new Set(dbPending.map(r => String(r.id)));
+
+        // 1. Cancel active timers for DB reminders that were deleted or cancelled
+        for (const [timerId, timer] of activeTimers.entries()) {
+            if (!isNaN(Number(timerId)) && !pendingIds.has(timerId)) {
+                clearTimeout(timer);
+                activeTimers.delete(timerId);
+                console.log(`[Reminders Sync] Cancelled timer for removed reminder #${timerId}`);
+            }
+        }
+
+        // 2. Schedule any newly added pending reminders from SQLite
+        for (const rem of dbPending) {
+            const remIdStr = String(rem.id);
+            if (!activeTimers.has(remIdStr)) {
+                console.log(`[Reminders Sync] Scheduling new reminder #${rem.id}: "${rem.name}" for ${rem.whatsapp_jid}`);
+                scheduleReminderTimer(sock, {
+                    id: remIdStr,
+                    sender: rem.whatsapp_jid,
+                    userId: rem.user_id,
+                    targetTimestamp: rem.target_timestamp,
+                    name: rem.name,
+                    description: rem.description,
+                    message: rem.message,
+                    mediaPath: rem.media_path,
+                    mediaType: rem.media_type,
+                    status: rem.status
+                });
+
+                if (!rem.message) {
+                    generateReminderMessage(remIdStr, rem.name, rem.description || "").catch(() => {});
+                }
+            }
+        }
+    } catch (e) {
+        console.error("[Reminders Sync Error]:", e.message);
+    }
+}
+
 function restorePendingReminders(sock) {
+    // 1. Restore from SQLite
+    try {
+        const dbPending = db.getPendingReminders();
+        console.log(`[Reminders] Restoring ${dbPending.length} pending reminder(s) from SQLite database...`);
+        for (const rem of dbPending) {
+            scheduleReminderTimer(sock, {
+                id: String(rem.id),
+                sender: rem.whatsapp_jid,
+                userId: rem.user_id,
+                targetTimestamp: rem.target_timestamp,
+                name: rem.name,
+                description: rem.description,
+                message: rem.message,
+                mediaPath: rem.media_path,
+                mediaType: rem.media_type,
+                status: rem.status
+            });
+        }
+    } catch (e) {
+        console.error("[DB Restore Error]:", e.message);
+    }
+
+    // 2. Also restore any legacy file reminders that aren't already scheduled
     const reminders = loadReminders();
-    const pending = reminders.filter(r => r.status === "pending");
-    console.log(`[Reminders] Restoring ${pending.length} pending reminder(s)...`);
+    const pending = reminders.filter(r => r.status === "pending" && !activeTimers.has(r.id));
     for (const rem of pending) {
         scheduleReminderTimer(sock, rem);
     }
@@ -520,14 +733,27 @@ Examples:
 name "${name}"${description ? `, description "${description}"` : ""}`;
 
     try {
-        const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Timeout")), 4000)
-        );
+        let timer = null;
+        const timeoutPromise = new Promise((resolve) => {
+            timer = setTimeout(() => resolve(null), 6000);
+        });
 
-        const apiPromise = generateAIContent([{ role: "user", parts: [{ text: prompt }] }], undefined);
+        // Safely attach .catch to prevent background stream abort crashes
+        const apiPromise = generateAIContent([{ role: "user", parts: [{ text: prompt }] }], undefined)
+            .catch(err => {
+                console.warn("[Reminder Message Gen] API Error (swallowed safely):", err?.message || err);
+                return null;
+            });
 
         const res = await Promise.race([apiPromise, timeoutPromise]);
-        let text = res.text ? res.text.trim() : "";
+        if (timer) clearTimeout(timer);
+
+        if (!res || !res.text) {
+            updateReminderMessage(reminderId, fallbackText);
+            return;
+        }
+
+        let text = res.text.trim();
 
         text = text.replace(/^["']|["']$/g, "").replace(/[*_~`]/g, "").trim();
 
@@ -552,6 +778,9 @@ name "${name}"${description ? `, description "${description}"` : ""}`;
 }
 
 function updateReminderMessage(reminderId, messageText) {
+    if (reminderId && !isNaN(Number(reminderId))) {
+        try { db.updateReminderMessage(Number(reminderId), messageText); } catch (e) {}
+    }
     const reminders = loadReminders();
     const item = reminders.find(r => r.id === reminderId);
     if (item) {
@@ -560,7 +789,7 @@ function updateReminderMessage(reminderId, messageText) {
     }
 }
 
-function createAndSaveReminder(sock, sender, parsedCmd) {
+function createAndSaveReminder(sock, sender, parsedCmd, dbUserId = null) {
     const { targetTimestamp, isTomorrow, name, description, mediaPath, mediaType } = parsedCmd;
 
     const displayName = (name && name !== "task" && name !== "your file" && name !== "your task") 
@@ -577,11 +806,33 @@ function createAndSaveReminder(sock, sender, parsedCmd) {
 
     const confirmMsg = templates[Math.floor(Math.random() * templates.length)];
 
+    let reminderId = "rem_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
+
+    if (dbUserId) {
+        try {
+            const dbRem = db.addReminder(dbUserId, {
+                name: displayName,
+                description: description || "",
+                targetTimestamp,
+                mediaPath: mediaPath || null,
+                mediaType: mediaType || null
+            });
+            if (dbRem && dbRem.id) {
+                reminderId = String(dbRem.id);
+                try {
+                    fs.writeFileSync(path.join(process.cwd(), ".reminders_sync"), String(Date.now()));
+                } catch (e) {}
+            }
+        } catch (e) {
+            console.error("[DB Reminder Save Error]:", e.message);
+        }
+    }
+
     const reminders = loadReminders();
-    const id = "rem_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
     const newRem = {
-        id,
+        id: reminderId,
         sender,
+        userId: dbUserId,
         targetTimestamp,
         name: displayName,
         description: description || "",
@@ -597,7 +848,7 @@ function createAndSaveReminder(sock, sender, parsedCmd) {
     scheduleReminderTimer(sock, newRem);
 
     // Background Gemini message generation
-    generateReminderMessage(id, displayName, description || "").catch(err => {
+    generateReminderMessage(reminderId, displayName, description || "").catch(err => {
         console.error("[Reminder Message BG Error]:", err.message);
     });
 
@@ -660,48 +911,145 @@ async function generateAIContent(contents, systemInstruction) {
     throw lastError;
 }
 
-// 9. Main Bot Engine
+// 9. Main Bot Engine with Single Active Socket & Debounced Reconnection
+let currentSock = null;
+let reconnectTimer = null;
+let isStartingBot = false;
+
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+    if (isStartingBot) return;
+    isStartingBot = true;
 
-    const sock = makeWASocket({
-        logger: pino({ level: "silent" }),
-        auth: state,
-        printQRInTerminal: false
-    });
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
 
-    sock.ev.on("creds.update", saveCreds);
+    // Clean up previous socket to prevent competing connections
+    if (currentSock) {
+        try {
+            currentSock.ev.removeAllListeners();
+            currentSock.ws?.close();
+        } catch (e) {}
+        currentSock = null;
+    }
 
-    sock.ev.on("connection.update", (update) => {
-        const { connection, lastDisconnect, qr } = update;
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
-        if (qr) {
-            console.log("Scan this QR code with WhatsApp (Linked Devices):");
-            qrcode.generate(qr, { small: true });
-        }
+        const sock = makeWASocket({
+            logger: pino({ level: "silent" }),
+            auth: state,
+            printQRInTerminal: false,
+            syncFullHistory: false, // Prevents giant chat history sync timeouts (408)
+            browser: ["Anam AI", "Chrome", "1.0.0"],
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000
+        });
 
-        if (connection === "close") {
-            const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            console.log(`Connection closed (status: ${statusCode || 'unknown'}). Reconnecting: ${shouldReconnect}`);
-            if (shouldReconnect) {
-                setTimeout(startBot, 3000);
-            } else {
-                console.log("⚠️ Session logged out or invalidated. Cleaning auth_info and restarting for QR scan...");
-                try {
-                    fs.rmSync("auth_info", { recursive: true, force: true });
-                } catch (e) {}
-                setTimeout(startBot, 2000);
+        currentSock = sock;
+        isStartingBot = false;
+
+        sock.ev.on("creds.update", saveCreds);
+
+        sock.ev.on("connection.update", (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                console.log("Scan this QR code with WhatsApp (Linked Devices):");
+                qrcode.generate(qr, { small: true });
             }
-        } else if (connection === "open") {
-            console.log("✅ Anam Bot is connected! Say 'Hey Anam' to start a session.");
-            restorePendingReminders(sock);
-        }
-    });
+
+            if (connection === "close") {
+                if (globalThis._syncInterval) {
+                    clearInterval(globalThis._syncInterval);
+                    globalThis._syncInterval = null;
+                }
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+                const isReplaced = statusCode === DisconnectReason.connectionReplaced; // 440
+                const shouldReconnect = !isLoggedOut && !isReplaced;
+
+                console.log(`Connection closed (status: ${statusCode || 'unknown'}). Reconnecting: ${shouldReconnect}`);
+
+                try {
+                    fs.writeFileSync("bot_state.json", JSON.stringify({
+                        connected: false,
+                        botPhone: null,
+                        updatedAt: new Date().toISOString()
+                    }, null, 2));
+                } catch (e) {}
+
+                if (isReplaced) {
+                    console.warn("⚠️ [WhatsApp Conflict] Connection was replaced by another active session (status 440).");
+                    console.warn("⚠️ If another terminal or WhatsApp Web tab is open, close it to allow this bot to connect.");
+                    // Do not reconnect immediately to prevent fighting the other session
+                    return;
+                }
+
+                if (isLoggedOut) {
+                    console.log("⚠️ Session logged out or invalidated. Cleaning auth_info and restarting for QR scan...");
+                    try {
+                        fs.rmSync("auth_info", { recursive: true, force: true });
+                    } catch (e) {}
+                    if (!reconnectTimer) {
+                        reconnectTimer = setTimeout(() => {
+                            reconnectTimer = null;
+                            startBot();
+                        }, 2000);
+                    }
+                    return;
+                }
+
+                if (shouldReconnect) {
+                    // For status 515 (restartRequired), reconnect quickly (1000ms), otherwise 3000ms
+                    const delay = statusCode === DisconnectReason.restartRequired ? 1000 : 3000;
+                    if (!reconnectTimer) {
+                        reconnectTimer = setTimeout(() => {
+                            reconnectTimer = null;
+                            startBot();
+                        }, delay);
+                    }
+                }
+            } else if (connection === "open") {
+                const botPhone = sock.user?.id ? sock.user.id.split(":")[0] : null;
+                console.log(`✅ Anam Bot is connected! WhatsApp Number: ${botPhone || 'Active'}. Say 'Hey Anam' to start a session.`);
+
+                try {
+                    fs.writeFileSync("bot_state.json", JSON.stringify({
+                        connected: true,
+                        botPhone: botPhone,
+                        updatedAt: new Date().toISOString()
+                    }, null, 2));
+                } catch (e) {}
+
+                restorePendingReminders(sock);
+
+                // Bi-directional Web <-> WhatsApp Real-Time Sync Loop
+                if (globalThis._syncInterval) clearInterval(globalThis._syncInterval);
+                globalThis._syncInterval = setInterval(() => {
+                    syncDatabaseReminders(currentSock);
+                }, 2000);
+
+                // Watch for instantaneous triggers from web server
+                const SYNC_TRIGGER_FILE = path.join(process.cwd(), ".reminders_sync");
+                try {
+                    if (!fs.existsSync(SYNC_TRIGGER_FILE)) {
+                        fs.writeFileSync(SYNC_TRIGGER_FILE, String(Date.now()));
+                    }
+                    if (!globalThis._syncFileWatcher) {
+                        globalThis._syncFileWatcher = fs.watch(SYNC_TRIGGER_FILE, () => {
+                            if (currentSock) syncDatabaseReminders(currentSock);
+                        });
+                    }
+                } catch (e) {}
+            }
+        });
 
     sock.ev.on("messages.upsert", async ({ messages }) => {
         const msg = messages[0];
-        if (!msg.message) return;
+        if (!msg || !msg.message) return;
 
         if (sentMessageIds.has(msg.key.id)) {
             sentMessageIds.delete(msg.key.id);
@@ -709,11 +1057,38 @@ async function startBot() {
         }
 
         const sender = msg.key.remoteJid;
+        // 1. Filter out broadcasts, newsletters, and status updates
+        if (!sender || sender === "status@broadcast" || sender.endsWith("@newsletter") || sender.endsWith("@broadcast")) {
+            return;
+        }
+
+        // 2. Filter out self-sent outgoing messages to other people (prevents hijacking owner's personal chats)
+        const myPhoneNumber = (sock.user?.id || "").split(":")[0].replace(/[^0-9]/g, "");
+        const myLid = (sock.user?.lid || "").split(":")[0].replace(/[^0-9]/g, "");
+        const senderNum = sender.split("@")[0].replace(/[^0-9]/g, "");
+
+        const isSelfChat = msg.key.fromMe && (
+            (myPhoneNumber && sender.includes(myPhoneNumber)) ||
+            (myLid && sender.includes(myLid)) ||
+            (sender.endsWith("@lid") && (sender.includes("12820510949561") || (myLid && senderNum === myLid)))
+        );
+
+        if (msg.key.fromMe && !isSelfChat) {
+            return;
+        }
+
         const isGroup = sender.endsWith("@g.us");
 
-        const imageMsg = msg.message.imageMessage;
-        const videoMsg = msg.message.videoMessage;
-        const rawText = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim();
+        // 3. Extract message content safely from all WhatsApp message wrappers
+        const m = msg.message?.ephemeralMessage?.message ||
+                  msg.message?.viewOnceMessage?.message ||
+                  msg.message?.viewOnceMessageV2?.message ||
+                  msg.message?.documentWithCaptionMessage?.message ||
+                  msg.message;
+
+        const imageMsg = m?.imageMessage;
+        const videoMsg = m?.videoMessage;
+        const rawText = (m?.conversation || m?.extendedTextMessage?.text || "").trim();
         const caption = ((imageMsg || videoMsg)?.caption || "").trim();
         const fullContent = rawText || caption;
 
@@ -724,13 +1099,141 @@ async function startBot() {
             return;
         }
 
-        const session = getSession(sender);
-        const lower = fullContent.toLowerCase();
-        const wakeWordRegex = /^\s*hey\s+anam[,:\s]*/i;
-        const isWakeWord = wakeWordRegex.test(fullContent);
+        console.log(`[WhatsApp Incoming] From: ${sender} | fromMe: ${msg.key.fromMe} | Text: "${fullContent}"`);
 
-        // Check if answering a pending prompt (e.g. "What time tomorrow?" or "What time should I remind you?")
+        // Wake word & bot invocation detection
+        const lower = fullContent.toLowerCase();
+        const wakeWordRegex = /^\s*(?:hey|hi|hello)?\s*anam[,:\s!.]*/i;
+        const isWakeWord = wakeWordRegex.test(fullContent);
+        const isBotCommand = /^(?:!bot|!start|!help|!anam|!token|!menu)\b/i.test(fullContent.trim());
+        const isDedicatedBot = process.env.DEDICATED_BOT_MODE === "true";
+
+        // Pending session response check
         const isPendingResponse = pendingMediaSessions.has(sender) || pendingTomorrowSessions.has(sender);
+
+        // Check for verification token format (e.g. ANAM-XXXXXX)
+        const candidateToken = db.normalizeToken(fullContent);
+        const isTokenFormat = /^(?:ANAM-|TOKEN-|LINK-)?[A-Z0-9]{6,12}$/i.test(fullContent.trim()) ||
+                              /^(?:token[:\s]+)?ANAM-[A-Z0-9]{6}$/i.test(fullContent.trim());
+        const isTokenAttempt = isTokenFormat || /\btoken\b/i.test(fullContent);
+
+        // ========================================================
+        // 4. TOKEN VERIFICATION & ACCOUNT LINKING (Handles both new & switching users)
+        // ========================================================
+        if (candidateToken) {
+            const matchedUser = db.getUserByAuthToken(candidateToken);
+            if (matchedUser) {
+                const phone = db.extractPhoneFromJid(sender);
+                db.verifyAndLinkUser(candidateToken, sender, phone);
+
+                const session = getSession(sender);
+                session.isActive = true;
+                session.userId = matchedUser.id;
+
+                const welcomeMsg = `🎉 *Authentication Successful!*
+
+Welcome to *Anam AI SaaS*, *${matchedUser.name}*!
+Your WhatsApp is now linked to your account (*${matchedUser.email}*).
+
+✨ *What you can do:*
+• *Clock Alarms:* "Hey Anam 4pm reminder: Team sync"
+• *Countdown Timers:* "Hey Anam remind me in 10 minutes to drink water"
+• *To-Dos:* "Hey Anam add Buy Groceries to list"
+• *Check Tasks:* "Hey Anam show tasks"
+• *Complete Tasks:* "Hey Anam done 1"
+• *Web Dashboard:* http://localhost:3000
+
+Say *"Hey Anam"* anytime to start your session!`;
+
+                await sendReply(sock, sender, { text: welcomeMsg });
+                console.log(`[Auth] Verified & linked user: ${matchedUser.email} (${sender})`);
+                return;
+            } else if (isTokenAttempt) {
+                const invalidMsg = `❌ *Invalid Verification Token*
+
+We couldn't find an account matching: *"${fullContent}"*
+
+Please verify your active token on your web dashboard:
+🌐 *http://localhost:3000*
+
+_Tip: Sign in, copy your active token (e.g. ANAM-XXXXXX), and reply with it here._`;
+                await sendReply(sock, sender, { text: invalidMsg });
+                return;
+            }
+        }
+
+        // ========================================================
+        // 5. UNVERIFIED USER HANDLING
+        // ========================================================
+        let dbUser = db.getUserByWhatsAppJid(sender);
+
+        if (!dbUser) {
+            if (isWakeWord || isBotCommand || isDedicatedBot || isSelfChat) {
+                const authPrompt = `👋 *Welcome to Anam AI Assistant!*
+
+This WhatsApp bot is an exclusive service for registered SaaS members. One bot serves all registered users with secure, multi-tenant isolation!
+
+*To get started in 3 quick steps:*
+1️⃣ *Register on our web portal:*
+🌐 http://localhost:3000
+
+2️⃣ *Copy your unique Verification Token* from your dashboard (e.g. *ANAM-A7B8C9*).
+
+3️⃣ *Reply to this chat with your token* to link your account!
+
+_Already have your token? Simply reply with it now to verify!_`;
+
+                await sendReply(sock, sender, { text: authPrompt });
+                return;
+            }
+
+            // Normal personal message to this WhatsApp number -> SILENTLY IGNORE (do not spam personal contacts)
+            console.log(`[Filter] Ignored unverified message from ${sender} (no wake word / bot command)`);
+            return;
+        }
+
+        // ========================================================
+        // 6. VERIFIED USER: ACCOUNT COMMANDS & SESSION HANDLING
+        // ========================================================
+        db.updateLastActive(dbUser.id);
+        const accountCmdLower = fullContent.toLowerCase().trim();
+
+        if (["!account", "whoami", "my account", "!status"].includes(accountCmdLower)) {
+            const pendingTodos = db.getUserTodos(dbUser.id).filter(t => t.status === "pending").length;
+            const pendingRem = db.getUserReminders(dbUser.id).filter(r => r.status === "pending").length;
+            const accountMsg = `👤 *Your Anam AI Account*
+• *Name:* ${dbUser.name}
+• *Email:* ${dbUser.email}
+• *Token:* ${dbUser.auth_token}
+• *Status:* 🟢 Verified & Linked
+• *Active Tasks:* ${pendingTodos}
+• *Scheduled Reminders:* ${pendingRem}
+• *Web Dashboard:* http://localhost:3000
+
+_Type *'!unlink'* to disconnect this WhatsApp number._`;
+            await sendReply(sock, sender, { text: accountMsg });
+            return;
+        }
+
+        if (["!unlink", "unlink", "unlink account", "disconnect"].includes(accountCmdLower)) {
+            db.unlinkUserWhatsApp(dbUser.id);
+            clearSession(sender);
+            const unlinkedMsg = `👋 *Account Disconnected*
+
+Your WhatsApp has been unlinked from your account (*${dbUser.email}*).
+You can reconnect anytime by sending a fresh token from your dashboard.`;
+            await sendReply(sock, sender, { text: unlinkedMsg });
+            return;
+        }
+
+        const session = getSession(sender);
+        session.userId = dbUser.id;
+
+        // Check for direct commands: reminders, tasks, todos, media, or wake words
+        const isDirectReminder = Boolean(parseFreeFormReminder(fullContent));
+        const isAddTask = Boolean(parseTaskCommand(fullContent));
+        const isShowTasks = /^\s*(?:show\s+(?:my\s+)?tasks|my\s+tasks|tasks|todos|my\s+todo\s+list)\s*$/i.test(fullContent);
+        const isDoneTask = /^\s*(?:done|complete|check\s+off)\s+(\d+)\s*$/i.test(fullContent);
 
         if (isGroup) {
             // Group Chat Rule: MUST start with "Hey Anam" OR be an active response to a pending prompt
@@ -738,8 +1241,8 @@ async function startBot() {
                 return;
             }
         } else {
-            // Direct/Private Chat Rule: MUST start with "Hey Anam", be an active session, or be a pending response
-            if (isWakeWord) {
+            // Direct/Private Chat Rule: Activate session on wake word, direct reminder, direct tasks, media, or self-chat
+            if (isWakeWord || isDirectReminder || isAddTask || isShowTasks || isDoneTask || imageMsg || videoMsg || isSelfChat) {
                 session.isActive = true;
             } else if (!session.isActive && !isPendingResponse) {
                 return;
@@ -838,7 +1341,7 @@ _Type *"bye"* or *"exit"* when done._`;
                 if (parsedCmd && parsedCmd.targetTimestamp) {
                     parsedCmd.mediaPath = mediaPath;
                     parsedCmd.mediaType = mediaType;
-                    const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd);
+                    const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
                     await sendReply(sock, sender, { text: confirmMsg });
                     return;
                 } else {
@@ -854,18 +1357,45 @@ _Type *"bye"* or *"exit"* when done._`;
             }
         }
 
+        // Direct Add-Task Command Handling (Synced immediately with SQLite & Web)
+        const taskCmd = parseTaskCommand(userPrompt);
+        if (taskCmd && taskCmd.name) {
+            let addedTodo = null;
+            if (dbUser) {
+                addedTodo = db.addTodo(dbUser.id, taskCmd.name, taskCmd.description || "");
+            } else {
+                const todos = loadTodos();
+                const userTodos = todos[sender] || [];
+                const newItem = taskCmd.description ? { name: taskCmd.name, description: taskCmd.description } : { name: taskCmd.name };
+                userTodos.push(newItem);
+                todos[sender] = userTodos;
+                saveTodos(todos);
+                addedTodo = newItem;
+            }
+
+            const descSnippet = taskCmd.description ? ` (${taskCmd.description})` : "";
+            const replyText = `✅ Added to your checklist: "*${taskCmd.name}*"${descSnippet}\nSynced with your web dashboard! 🌐`;
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: replyText }] });
+            await sendReply(sock, sender, { text: replyText });
+            return;
+        }
+
         // Handle Direct Task Commands (FIX 3: Direct handling without Gemini or Reminder Parser)
         const showTasksRegex = /^\s*(?:show\s+(?:my\s+)?tasks|my\s+tasks|tasks|todos|my\s+todo\s+list)\s*$/i;
         const doneTaskRegex = /^\s*(?:done|complete|check\s+off)\s+(\d+)\s*$/i;
 
         if (showTasksRegex.test(userPrompt)) {
-            const todos = loadTodos();
-            const userTodos = todos[sender] || [];
-            const reminders = loadReminders().filter(r => r.sender === sender && r.status === "pending");
+            const userTodos = dbUser 
+                ? db.getUserTodos(dbUser.id).filter(t => t.status === "pending")
+                : (loadTodos()[sender] || []);
+            const userReminders = dbUser
+                ? db.getUserReminders(dbUser.id).filter(r => r.status === "pending")
+                : loadReminders().filter(r => r.sender === sender && r.status === "pending");
 
             let resultText = "";
-            if (userTodos.length === 0 && reminders.length === 0) {
-                resultText = "Your to-do list is empty!";
+            if (userTodos.length === 0 && userReminders.length === 0) {
+                resultText = "Your to-do list is empty! Check your web dashboard at http://localhost:3000";
             } else {
                 let listStr = "";
                 let count = 1;
@@ -876,15 +1406,15 @@ _Type *"bye"* or *"exit"* when done._`;
                         return `${count++}. ${itemName}${itemDesc}`;
                     }).join("\n");
                 }
-                if (reminders.length > 0) {
+                if (userReminders.length > 0) {
                     if (listStr) listStr += "\n";
-                    listStr += reminders.map(r => {
-                        const timeStr = formatTimeString(r.targetTimestamp);
+                    listStr += userReminders.map(r => {
+                        const timeStr = formatTimeString(r.target_timestamp || r.targetTimestamp);
                         const descStr = r.description ? ` (${r.description})` : "";
                         return `${count++}. ${r.name}${descStr} - ${timeStr}`;
                     }).join("\n");
                 }
-                resultText = `Your Tasks:\n${listStr}`;
+                resultText = `📝 Your Tasks (Synced with Web):\n${listStr}`;
             }
 
             session.history.push({ role: "user", parts: [{ text: userPrompt }] });
@@ -896,23 +1426,44 @@ _Type *"bye"* or *"exit"* when done._`;
         const doneMatch = userPrompt.match(doneTaskRegex);
         if (doneMatch) {
             const idx = parseInt(doneMatch[1], 10);
-            const todos = loadTodos();
-            const userTodos = todos[sender] || [];
             let resultText = "";
 
-            if (idx >= 1 && idx <= userTodos.length) {
-                const removed = userTodos.splice(idx - 1, 1);
-                todos[sender] = userTodos;
-                saveTodos(todos);
-                if (removed[0] && typeof removed[0] === "object" && removed[0].mediaPath) {
-                    if (fs.existsSync(removed[0].mediaPath)) {
-                        try { fs.unlinkSync(removed[0].mediaPath); } catch {}
-                    }
+            if (dbUser) {
+                const pendingTodos = db.getUserTodos(dbUser.id).filter(t => t.status === "pending");
+                const pendingReminders = db.getUserReminders(dbUser.id).filter(r => r.status === "pending");
+                const totalPending = pendingTodos.length + pendingReminders.length;
+
+                if (idx >= 1 && idx <= pendingTodos.length) {
+                    const target = pendingTodos[idx - 1];
+                    db.completeTodoById(dbUser.id, target.id);
+                    resultText = `🎉 Done! Completed: "${target.name}". Synced with your dashboard!`;
+                } else if (idx > pendingTodos.length && idx <= totalPending) {
+                    const target = pendingReminders[idx - pendingTodos.length - 1];
+                    db.markReminderSent(target.id);
+                    try {
+                        fs.writeFileSync(path.join(__dirname, ".reminders_sync"), String(Date.now()));
+                    } catch (e) {}
+                    resultText = `🎉 Done! Completed reminder task: "${target.name}". Synced with your dashboard!`;
+                } else {
+                    resultText = "Invalid task number. Type 'show tasks' to view your current list.";
                 }
-                const removedName = typeof removed[0] === "object" ? removed[0].name : removed[0];
-                resultText = `Done! Completed: ${removedName}`;
             } else {
-                resultText = "Invalid task number.";
+                const todos = loadTodos();
+                const userTodos = todos[sender] || [];
+                if (idx >= 1 && idx <= userTodos.length) {
+                    const removed = userTodos.splice(idx - 1, 1);
+                    todos[sender] = userTodos;
+                    saveTodos(todos);
+                    if (removed[0] && typeof removed[0] === "object" && removed[0].mediaPath) {
+                        if (fs.existsSync(removed[0].mediaPath)) {
+                            try { fs.unlinkSync(removed[0].mediaPath); } catch {}
+                        }
+                    }
+                    const removedName = typeof removed[0] === "object" ? removed[0].name : removed[0];
+                    resultText = `Done! Completed: ${removedName}`;
+                } else {
+                    resultText = "Invalid task number.";
+                }
             }
 
             session.history.push({ role: "user", parts: [{ text: userPrompt }] });
@@ -948,7 +1499,7 @@ _Type *"bye"* or *"exit"* when done._`;
                     description: pending.description || ""
                 };
 
-                const confirmMsg = createAndSaveReminder(sock, sender, newParsedCmd);
+                const confirmMsg = createAndSaveReminder(sock, sender, newParsedCmd, dbUser ? dbUser.id : null);
                 session.history.push({ role: "user", parts: [{ text: userPrompt }] });
                 session.history.push({ role: "model", parts: [{ text: confirmMsg }] });
                 await sendReply(sock, sender, { text: confirmMsg });
@@ -976,7 +1527,7 @@ _Type *"bye"* or *"exit"* when done._`;
                 parsedCmd.name = "your file";
             }
 
-            const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd);
+            const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
             session.history.push({ role: "user", parts: [{ text: userPrompt }] });
             session.history.push({ role: "model", parts: [{ text: confirmMsg }] });
             await sendReply(sock, sender, { text: confirmMsg });
@@ -1018,7 +1569,7 @@ _Type *"bye"* or *"exit"* when done._`;
             }
 
             if (parsedCmd.targetTimestamp) {
-                const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd);
+                const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
                 session.history.push({ role: "user", parts: [{ text: userPrompt }] });
                 session.history.push({ role: "model", parts: [{ text: confirmMsg }] });
                 await sendReply(sock, sender, { text: confirmMsg });
@@ -1034,7 +1585,7 @@ _Type *"bye"* or *"exit"* when done._`;
         }
 
         // 4. Handle To-Do and General AI queries via Gemini
-        const systemInstruction = `You are Anam, a smart WhatsApp assistant.
+        const systemInstruction = `You are Anam, a smart WhatsApp assistant${dbUser ? ` for ${dbUser.name}` : ''}.
 Current Local Time: ${new Date().toLocaleString()}
 ${session.summary ? `Previous Conversation Summary: "${session.summary}"` : ""}
 
@@ -1057,21 +1608,26 @@ Reply like a friendly person texting. Short, plain words. No headings. No bullet
                     let resultText = "";
 
                     if (name === "add_todo") {
-                        const todos = loadTodos();
-                        const userTodos = todos[sender] || [];
                         const todoName = args.name || args.task || "Task";
                         const todoDesc = args.description || "";
-                        const newItem = todoDesc ? { name: todoName, description: todoDesc } : { name: todoName };
-
-                        userTodos.push(newItem);
-                        todos[sender] = userTodos;
-                        saveTodos(todos);
-
+                        if (dbUser) {
+                            db.addTodo(dbUser.id, todoName, todoDesc);
+                        } else {
+                            const todos = loadTodos();
+                            const userTodos = todos[sender] || [];
+                            const newItem = todoDesc ? { name: todoName, description: todoDesc } : { name: todoName };
+                            userTodos.push(newItem);
+                            todos[sender] = userTodos;
+                            saveTodos(todos);
+                        }
                         resultText = `Added to list: ${todoName}${todoDesc ? ` (${todoDesc})` : ""}`;
                     } else if (name === "get_todos") {
-                        const todos = loadTodos();
-                        const userTodos = todos[sender] || [];
-                        const reminders = loadReminders().filter(r => r.sender === sender && r.status === "pending");
+                        const userTodos = dbUser 
+                            ? db.getUserTodos(dbUser.id).filter(t => t.status === "pending")
+                            : (loadTodos()[sender] || []);
+                        const reminders = dbUser 
+                            ? db.getUserReminders(dbUser.id).filter(r => r.status === "pending")
+                            : loadReminders().filter(r => r.sender === sender && r.status === "pending");
 
                         if (userTodos.length === 0 && reminders.length === 0) {
                             resultText = "Your to-do list is empty!";
@@ -1088,7 +1644,7 @@ Reply like a friendly person texting. Short, plain words. No headings. No bullet
                             if (reminders.length > 0) {
                                 if (listStr) listStr += "\n";
                                 listStr += reminders.map(r => {
-                                    const timeStr = formatTimeString(r.targetTimestamp);
+                                    const timeStr = formatTimeString(r.target_timestamp || r.targetTimestamp);
                                     const descStr = r.description ? ` (${r.description})` : "";
                                     return `${count++}. ${r.name}${descStr} - ${timeStr}`;
                                 }).join("\n");
@@ -1096,22 +1652,43 @@ Reply like a friendly person texting. Short, plain words. No headings. No bullet
                             resultText = `Your Tasks:\n${listStr}`;
                         }
                     } else if (name === "complete_todo") {
-                        const todos = loadTodos();
-                        const userTodos = todos[sender] || [];
                         const idx = args.task_number;
-                        if (idx >= 1 && idx <= userTodos.length) {
-                            const removed = userTodos.splice(idx - 1, 1);
-                            todos[sender] = userTodos;
-                            saveTodos(todos);
-                            if (removed[0] && typeof removed[0] === "object" && removed[0].mediaPath) {
-                                if (fs.existsSync(removed[0].mediaPath)) {
-                                    try { fs.unlinkSync(removed[0].mediaPath); } catch {}
-                                }
+                        if (dbUser) {
+                            const pendingTodos = db.getUserTodos(dbUser.id).filter(t => t.status === "pending");
+                            const pendingReminders = db.getUserReminders(dbUser.id).filter(r => r.status === "pending");
+                            const totalPending = pendingTodos.length + pendingReminders.length;
+
+                            if (idx >= 1 && idx <= pendingTodos.length) {
+                                const target = pendingTodos[idx - 1];
+                                db.completeTodoById(dbUser.id, target.id);
+                                resultText = `Done! Completed: ${target.name}`;
+                            } else if (idx > pendingTodos.length && idx <= totalPending) {
+                                const target = pendingReminders[idx - pendingTodos.length - 1];
+                                db.markReminderSent(target.id);
+                                try {
+                                    fs.writeFileSync(path.join(__dirname, ".reminders_sync"), String(Date.now()));
+                                } catch (e) {}
+                                resultText = `Done! Completed: ${target.name}`;
+                            } else {
+                                resultText = "Invalid task number.";
                             }
-                            const removedName = typeof removed[0] === "object" ? removed[0].name : removed[0];
-                            resultText = `Done! Completed: ${removedName}`;
                         } else {
-                            resultText = "Invalid task number.";
+                            const todos = loadTodos();
+                            const userTodos = todos[sender] || [];
+                            if (idx >= 1 && idx <= userTodos.length) {
+                                const removed = userTodos.splice(idx - 1, 1);
+                                todos[sender] = userTodos;
+                                saveTodos(todos);
+                                if (removed[0] && typeof removed[0] === "object" && removed[0].mediaPath) {
+                                    if (fs.existsSync(removed[0].mediaPath)) {
+                                        try { fs.unlinkSync(removed[0].mediaPath); } catch {}
+                                    }
+                                }
+                                const removedName = typeof removed[0] === "object" ? removed[0].name : removed[0];
+                                resultText = `Done! Completed: ${removedName}`;
+                            } else {
+                                resultText = "Invalid task number.";
+                            }
                         }
                     } else if (name === "clear_memory") {
                         clearSession(sender);
@@ -1143,6 +1720,16 @@ Reply like a friendly person texting. Short, plain words. No headings. No bullet
             await sendReply(sock, sender, { text: replyText });
         }
     });
+    } catch (err) {
+        isStartingBot = false;
+        console.error("[StartBot Error]:", err?.message || err);
+        if (!reconnectTimer) {
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                startBot();
+            }, 3000);
+        }
+    }
 }
 
 startBot();

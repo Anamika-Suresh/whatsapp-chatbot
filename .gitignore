@@ -9,6 +9,8 @@ auth_info_baileys/
 # Personal User Data
 todos.json
 reminders.json
+saas_database.sqlite*
+bot_state.json
 media/
 
 # Node Dependencies
@@ -19,3 +21,5 @@ node_modules/
 npm-debug.log*
 .DS_Store
 Thumbs.db
+bot.pid
+.reminders_sync

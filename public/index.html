@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Anam AI — WhatsApp SaaS Assistant & Dashboard</title>
+  <meta name="description" content="Turn WhatsApp into your personal AI productivity assistant. Link your account with a unique token, manage tasks, set smart reminders, and sync across web and mobile.">
+  
+  <!-- Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="dark-theme">
+
+  <!-- Background Animated Gradient Orbs -->
+  <div class="bg-glow bg-glow-1"></div>
+  <div class="bg-glow bg-glow-2"></div>
+  <div class="bg-glow bg-glow-3"></div>
+
+  <!-- Notification Toast Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="nav-container">
+      <a href="#" class="brand-logo" id="nav-brand-logo">
+        <div class="logo-icon">
+          <span>⚡</span>
+        </div>
+        <div class="logo-text">
+          <span class="logo-title">Anam<span class="logo-accent">AI</span></span>
+          <span class="logo-badge">SaaS</span>
+        </div>
+      </a>
+
+      <!-- Desktop Nav Links (Visible when logged out) -->
+      <nav class="nav-links" id="guest-nav-links">
+        <a href="#how-it-works" class="nav-link">How It Works</a>
+        <a href="#features" class="nav-link">Features</a>
+        <a href="#commands" class="nav-link">Commands</a>
+        <button class="btn btn-outline" id="btn-open-signin">Sign In</button>
+        <button class="btn btn-primary" id="btn-open-signup">Get Token Free</button>
+      </nav>
+
+      <!-- User Nav Profile (Visible when logged in) -->
+      <div class="nav-user-profile hidden" id="user-nav-profile">
+        <div class="user-chip">
+          <div class="user-avatar" id="nav-user-avatar">U</div>
+          <div class="user-info-brief">
+            <span class="user-display-name" id="nav-user-name">User</span>
+            <span class="user-plan-badge">Pro Tier</span>
+          </div>
+        </div>
+        <button class="btn btn-ghost" id="btn-logout" title="Sign Out">Sign Out</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN APP CONTAINER -->
+  <main id="app-main">
+
+    <!-- ============================================== -->
+    <!-- VIEW 1: LANDING PAGE (GUEST)                   -->
+    <!-- ============================================== -->
+    <section id="view-landing" class="view-section">
+      
+      <!-- Hero Section -->
+      <div class="hero-section">
+        <div class="hero-content">
+          <div class="hero-badge">
+            <span class="badge-dot"></span> One Bot Number • Multi-User SaaS Platform
+          </div>
+          <h1 class="hero-title">
+            Your WhatsApp. <br>
+            <span class="gradient-text">Supercharged by AI.</span>
+          </h1>
+          <p class="hero-description">
+            Sign up, grab your private verification token, and connect directly to our central WhatsApp AI assistant. Set scheduled reminders, manage daily to-dos, and consult intelligent conversational AI in seconds.
+          </p>
+
+          <div class="hero-actions">
+            <button class="btn btn-primary btn-lg" id="hero-btn-signup">
+              <span>Generate My Access Token</span>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </button>
+            <a href="#how-it-works" class="btn btn-secondary btn-lg">
+              <span>See How It Works</span>
+            </a>
+          </div>
+
+          <div class="hero-metrics">
+            <div class="metric-item">
+              <span class="metric-value">100%</span>
+              <span class="metric-label">Private & Isolated Data</span>
+            </div>
+            <div class="metric-divider"></div>
+            <div class="metric-item">
+              <span class="metric-value">0-Setup</span>
+              <span class="metric-label">Token Handshake</span>
+            </div>
+            <div class="metric-divider"></div>
+            <div class="metric-item">
+              <span class="metric-value">Real-Time</span>
+              <span class="metric-label">Web & WhatsApp Sync</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Interactive WhatsApp Chat Simulation Mockup -->
+        <div class="hero-mockup">
+          <div class="phone-frame">
+            <div class="phone-header">
+              <div class="phone-camera"></div>
+              <div class="phone-speaker"></div>
+            </div>
+            <div class="whatsapp-app-header">
+              <div class="wa-avatar">🤖</div>
+              <div class="wa-contact-info">
+                <span class="wa-contact-name">Anam AI Bot</span>
+                <span class="wa-contact-status"><span class="wa-dot"></span> Online SaaS Service</span>
+              </div>
+            </div>
+            <div class="whatsapp-chat-body">
+              <div class="chat-bubble incoming">
+                <p>👋 <strong>Welcome to Anam AI SaaS!</strong></p>
+                <p>Please reply with your verification token from your dashboard to connect your account.</p>
+                <span class="chat-time">10:42 AM</span>
+              </div>
+              <div class="chat-bubble outgoing">
+                <p>ANAM-9X7K2M</p>
+                <span class="chat-time">10:43 AM ✓✓</span>
+              </div>
+              <div class="chat-bubble incoming verified-bubble">
+                <p>🎉 <strong>Authentication Successful!</strong></p>
+                <p>Welcome, Alex! Your WhatsApp is now linked to your account. Say <em>"Hey Anam"</em> to begin!</p>
+                <span class="chat-time">10:43 AM</span>
+              </div>
+              <div class="chat-bubble outgoing">
+                <p>Hey Anam remind me at 4pm to review design proposals</p>
+                <span class="chat-time">10:44 AM ✓✓</span>
+              </div>
+              <div class="chat-bubble incoming">
+                <p>⏰ Reminder scheduled for <strong>16:00</strong>: <em>Review design proposals</em>. Synced with your web dashboard!</p>
+                <span class="chat-time">10:44 AM</span>
+              </div>
+            </div>
+            <div class="whatsapp-chat-input-bar">
+              <div class="wa-input-fake">Message Anam Bot...</div>
+              <div class="wa-send-btn">➤</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3-Step "How It Works" Section -->
+      <section id="how-it-works" class="section-how-it-works">
+        <div class="section-header">
+          <span class="section-tag">Simple 3-Step Onboarding</span>
+          <h2 class="section-title">How One Bot Serves Every Registered User</h2>
+          <p class="section-subtitle">Our secure token handshake pairs your personal account with our multi-tenant WhatsApp bot instance.</p>
+        </div>
+
+        <div class="steps-grid">
+          <div class="step-card">
+            <div class="step-number">01</div>
+            <div class="step-icon">📝</div>
+            <h3 class="step-title">Create Free Account</h3>
+            <p class="step-desc">Register on the web portal in under 15 seconds. No credit card or phone verification upfront required.</p>
+          </div>
+
+          <div class="step-card featured-step">
+            <div class="step-badge">Magic Step</div>
+            <div class="step-number">02</div>
+            <div class="step-icon">🔑</div>
+            <h3 class="step-title">Get Verification Token</h3>
+            <p class="step-desc">Your dashboard instantly issues a unique alphanumeric token (e.g., <code>ANAM-7K92X4</code>) linked to your database profile.</p>
+          </div>
+
+          <div class="step-card">
+            <div class="step-number">03</div>
+            <div class="step-icon">💬</div>
+            <h3 class="step-title">Message WhatsApp Bot</h3>
+            <p class="step-desc">Send your token to the bot's WhatsApp number. The bot verifies the token, links your number, and activates your personal workspace.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Feature Grid -->
+      <section id="features" class="section-features">
+        <div class="section-header">
+          <span class="section-tag">Next-Gen Capabilities</span>
+          <h2 class="section-title">Engineered for Seamless Productivity</h2>
+        </div>
+
+        <div class="features-grid">
+          <div class="feature-card">
+            <div class="feature-icon">🔒</div>
+            <h3 class="feature-title">Multi-Tenant Isolation</h3>
+            <p class="feature-desc">Every user's reminders, tasks, chat histories, and media are completely segregated in SQLite database tables.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <h3 class="feature-title">Bi-Directional Sync</h3>
+            <p class="feature-desc">Add tasks on WhatsApp and see them update on the dashboard in real-time, or manage them directly from the web.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">⏰</div>
+            <h3 class="feature-title">Precision Reminders & Alarms</h3>
+            <p class="feature-desc">Clock-time alarms, relative countdown timers, and media reminders delivered straight to your WhatsApp.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🧠</div>
+            <h3 class="feature-title">Contextual Gemini AI</h3>
+            <p class="feature-desc">Powered by Google Gemini 3.6 Flash with smart memory summarization and function calling.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">📱</div>
+            <h3 class="feature-title">One-Click Token Regeneration</h3>
+            <p class="feature-desc">Lost your session or changed numbers? Easily regenerate tokens or unlink devices with a single click.</p>
+          </div>
+          <div class="feature-card">
+            <div class="feature-icon">🚀</div>
+            <h3 class="feature-title">Zero App Installation</h3>
+            <p class="feature-desc">No new app to download. Your assistant lives directly in WhatsApp, the app you already open 50+ times a day.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Command Cheatsheet Section -->
+      <section id="commands" class="section-commands">
+        <div class="section-header">
+          <span class="section-tag">Bot Command Reference</span>
+          <h2 class="section-title">What You Can Say to Anam on WhatsApp</h2>
+          <p class="section-subtitle">Once verified, say <em>"Hey Anam"</em> to awaken your assistant.</p>
+        </div>
+
+        <div class="commands-table-wrapper">
+          <table class="commands-table">
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Example Message to Bot</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="badge-cmd">Verify Token</span></td>
+                <td><code>ANAM-8X9K2M</code></td>
+                <td>Links your WhatsApp number to your SaaS user profile</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">Start Session</span></td>
+                <td><code>Hey Anam</code></td>
+                <td>Opens active conversation session</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">Set Clock Alarm</span></td>
+                <td><code>Hey Anam 4pm reminder: name: Team Sync, description: Daily standup meeting</code></td>
+                <td>Schedules alarm for 16:00 and alerts you via WhatsApp</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">Countdown Timer</span></td>
+                <td><code>Hey Anam remind me in 15 minutes to call Sarah</code></td>
+                <td>Sets a 15-minute timer with WhatsApp notification</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">Add To-Do Task</span></td>
+                <td><code>Hey Anam add Prepare presentation to list</code></td>
+                <td>Saves task to database & syncs with web dashboard</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">View Checklist</span></td>
+                <td><code>Hey Anam show tasks</code></td>
+                <td>Lists active to-dos and pending reminders</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">Complete Task</span></td>
+                <td><code>Hey Anam done 1</code></td>
+                <td>Marks the 1st task complete and syncs status</td>
+              </tr>
+              <tr>
+                <td><span class="badge-cmd">Account Status</span></td>
+                <td><code>!account</code> or <code>whoami</code></td>
+                <td>Displays your SaaS account profile and verified email</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Footer CTA -->
+      <div class="landing-cta-banner">
+        <h2>Ready to Upgrade Your Daily Flow?</h2>
+        <p>Join our platform today and experience an AI assistant always at your fingertips.</p>
+        <button class="btn btn-primary btn-lg" id="footer-btn-signup">Create Account & Get Token</button>
+      </div>
+
+    </section>
+
+    <!-- ============================================== -->
+    <!-- VIEW 2: LOGGED-IN SAAS DASHBOARD               -->
+    <!-- ============================================== -->
+    <section id="view-dashboard" class="view-section hidden">
+      
+      <!-- Dashboard Top Banner -->
+      <div class="dashboard-header">
+        <div class="welcome-block">
+          <h1 class="dashboard-title">Welcome back, <span id="dash-user-name" class="gradient-text">Member</span>!</h1>
+          <p class="dashboard-subtitle">Manage your WhatsApp bot link, synchronized to-do list, and scheduled reminders.</p>
+        </div>
+        <div class="dash-meta-badge">
+          <span class="status-indicator-dot online"></span>
+          <span>SaaS Account Active</span>
+        </div>
+      </div>
+
+      <!-- Centerpiece: WHATSAPP LINKING STATUS CARD -->
+      <div class="whatsapp-link-card" id="whatsapp-link-card">
+        
+        <!-- State A: When NOT Linked -->
+        <div id="wa-state-unlinked" class="wa-state-block">
+          <div class="wa-card-header">
+            <div class="wa-card-title-group">
+              <span class="wa-badge unlinked">🔴 WhatsApp Not Connected</span>
+              <h2>Step 1: Authenticate with the WhatsApp Bot</h2>
+              <p>Send your unique token to the bot's WhatsApp number to link your account.</p>
+            </div>
+            <div class="wa-bot-status-pill" id="bot-server-status-pill">
+              <span class="pulsing-dot yellow"></span>
+              <span id="bot-server-status-text">Checking Bot Status...</span>
+            </div>
+          </div>
+
+          <div class="token-display-container">
+            <div class="token-box">
+              <span class="token-label">YOUR VERIFICATION TOKEN</span>
+              <div class="token-value-row">
+                <span class="token-code" id="user-token-code">ANAM-XXXXXX</span>
+                <button class="btn btn-copy" id="btn-copy-token" title="Copy Token">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  <span>Copy Token</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="token-actions">
+              <button class="btn btn-secondary" id="btn-regenerate-token">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                <span>Regenerate Token</span>
+              </button>
+              <a href="#" target="_blank" class="btn btn-whatsapp" id="btn-open-wa-chat">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0 0 12.04 2z"/></svg>
+                <span>Open WhatsApp & Send Token</span>
+              </a>
+            </div>
+          </div>
+
+          <div class="verification-instructions">
+            <div class="instr-step">
+              <span class="instr-num">1</span>
+              <span>Click <strong>Copy Token</strong> above.</span>
+            </div>
+            <div class="instr-arrow">➔</div>
+            <div class="instr-step">
+              <span class="instr-num">2</span>
+              <span>Open WhatsApp and message the bot number.</span>
+            </div>
+            <div class="instr-arrow">➔</div>
+            <div class="instr-step">
+              <span class="instr-num">3</span>
+              <span>Send your token: <code id="instr-token-preview">ANAM-XXXXXX</code></span>
+            </div>
+            <div class="instr-arrow">➔</div>
+            <div class="instr-step">
+              <span class="instr-num">4</span>
+              <span>The bot verifies you immediately and your status turns Green!</span>
+            </div>
+          </div>
+
+          <div class="live-listener-bar">
+            <span class="pulse-radar"></span>
+            <span>Live listening for your token from WhatsApp... This card will automatically update!</span>
+          </div>
+        </div>
+
+        <!-- State B: When LINKED & VERIFIED -->
+        <div id="wa-state-linked" class="wa-state-block hidden">
+          <div class="wa-card-header">
+            <div class="wa-card-title-group">
+              <span class="wa-badge linked">🟢 WhatsApp Connected & Active</span>
+              <h2>WhatsApp Identity Verified</h2>
+              <p>Your account is paired with Anam AI Bot. You can talk to it anytime on WhatsApp!</p>
+            </div>
+            <div class="wa-actions-right">
+              <button class="btn btn-danger-outline btn-sm" id="btn-unlink-wa">Disconnect WhatsApp</button>
+            </div>
+          </div>
+
+          <div class="linked-info-grid">
+            <div class="linked-info-item">
+              <span class="info-label">LINKED PHONE NUMBER</span>
+              <span class="info-value" id="wa-linked-phone">+1234567890</span>
+            </div>
+            <div class="linked-info-item">
+              <span class="info-label">WHATSAPP JID</span>
+              <span class="info-value mono" id="wa-linked-jid">user@s.whatsapp.net</span>
+            </div>
+            <div class="linked-info-item">
+              <span class="info-label">VERIFIED AT</span>
+              <span class="info-value" id="wa-linked-time">Just now</span>
+            </div>
+            <div class="linked-info-item">
+              <span class="info-label">SYNC STATUS</span>
+              <span class="info-value success-text">Bi-Directional Active</span>
+            </div>
+          </div>
+
+          <div class="linked-quick-guide">
+            <div class="guide-tip">
+              💡 <strong>Pro Tip:</strong> On your phone, simply open WhatsApp and say <code>"Hey Anam remind me at 5pm to update report"</code> or <code>"Hey Anam show tasks"</code>!
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Dashboard 2-Column Grid: Synced To-Dos & Synced Reminders -->
+      <div class="dash-grid">
+        
+        <!-- Column 1: Synced To-Do List -->
+        <div class="dash-panel card-panel">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <div class="panel-icon">📋</div>
+              <div>
+                <h3 class="panel-title">Synced To-Do Checklist</h3>
+                <span class="panel-subtitle">Updated in real-time from WhatsApp & Web</span>
+              </div>
+            </div>
+            <span class="badge-count" id="todo-count-badge">0 Tasks</span>
+          </div>
+
+          <!-- Add Task Form -->
+          <form id="form-add-todo" class="add-item-form">
+            <div class="form-row-compact">
+              <input type="text" id="input-todo-name" class="form-input" placeholder="New task title..." required>
+              <button type="submit" class="btn btn-primary btn-sm">Add Task</button>
+            </div>
+            <input type="text" id="input-todo-desc" class="form-input form-input-sub" placeholder="Optional task description...">
+          </form>
+
+          <!-- Task List -->
+          <div class="items-list-container" id="todos-list-container">
+            <div class="empty-state" id="todos-empty-state">
+              <span class="empty-icon">📝</span>
+              <p>No tasks yet! Add one above or tell the bot in WhatsApp: <br><em>"Hey Anam add finish report to list"</em></p>
+            </div>
+            <ul class="task-list" id="todos-ul"></ul>
+          </div>
+        </div>
+
+        <!-- Column 2: Scheduled Reminders -->
+        <div class="dash-panel card-panel">
+          <div class="panel-header">
+            <div class="panel-title-group">
+              <div class="panel-icon">⏰</div>
+              <div>
+                <h3 class="panel-title">Scheduled Reminders</h3>
+                <span class="panel-subtitle">Delivered directly to your WhatsApp</span>
+              </div>
+            </div>
+            <span class="badge-count" id="reminder-count-badge">0 Reminders</span>
+          </div>
+
+          <!-- Add Quick Reminder Form -->
+          <form id="form-add-reminder" class="add-item-form">
+            <div class="form-row-compact">
+              <input type="text" id="input-rem-name" class="form-input" placeholder="Reminder title..." required>
+              <input type="datetime-local" id="input-rem-time" class="form-input" required>
+            </div>
+            <div class="form-row-compact" style="margin-top: 8px;">
+              <input type="text" id="input-rem-desc" class="form-input form-input-sub" placeholder="Optional details...">
+              <button type="submit" class="btn btn-secondary btn-sm" style="white-space: nowrap;">Set Reminder</button>
+            </div>
+          </form>
+
+          <!-- Reminders List -->
+          <div class="items-list-container" id="reminders-list-container">
+            <div class="empty-state" id="reminders-empty-state">
+              <span class="empty-icon">🔔</span>
+              <p>No scheduled reminders. Tell the bot in WhatsApp: <br><em>"Hey Anam remind me in 10 minutes to take medicine"</em></p>
+            </div>
+            <ul class="reminders-list" id="reminders-ul"></ul>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Quick Command Cheatsheet in Dashboard -->
+      <div class="dash-cheatsheet-card card-panel">
+        <div class="cheatsheet-header">
+          <h3>⚡ Handy WhatsApp Bot Commands for You</h3>
+          <span class="cheatsheet-tag">Always Active</span>
+        </div>
+        <div class="quick-cmd-chips">
+          <div class="cmd-chip" onclick="copyText('Hey Anam remind me at 8:30pm to check email')">
+            <code>Hey Anam remind me at 8:30pm to check email</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam show tasks')">
+            <code>Hey Anam show tasks</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam done 1')">
+            <code>Hey Anam done 1</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam add Buy Groceries to list with description: milk, bread, eggs')">
+            <code>Hey Anam add Buy Groceries to list...</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('!account')">
+            <code>!account</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+  </main>
+
+  <!-- ============================================== -->
+  <!-- AUTH MODAL (SIGN IN / SIGN UP)                 -->
+  <!-- ============================================== -->
+  <div class="modal-overlay hidden" id="auth-modal">
+    <div class="modal-card">
+      <button class="modal-close-btn" id="btn-close-modal" aria-label="Close Modal">&times;</button>
+      
+      <!-- Modal Tabs -->
+      <div class="modal-tabs">
+        <button class="modal-tab active" id="tab-signup">Create Account</button>
+        <button class="modal-tab" id="tab-signin">Sign In</button>
+      </div>
+
+      <!-- Sign Up Form -->
+      <form id="form-signup" class="auth-form">
+        <div class="form-header">
+          <h2 class="auth-title">Register for Anam AI</h2>
+          <p class="auth-subtitle">Get instant access to your WhatsApp verification token.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="signup-name">Full Name</label>
+          <input type="text" id="signup-name" class="form-input" placeholder="e.g. Anamika Suresh" required>
+        </div>
+
+        <div class="form-group">
+          <label for="signup-email">Email Address</label>
+          <input type="email" id="signup-email" class="form-input" placeholder="name@example.com" required>
+        </div>
+
+        <div class="form-group">
+          <label for="signup-password">Password (Min. 6 characters)</label>
+          <input type="password" id="signup-password" class="form-input" placeholder="••••••••" minlength="6" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg" id="btn-submit-signup">
+          <span>Create Account & Get Token</span>
+        </button>
+
+        <p class="auth-switch-text">
+          Already have an account? <a href="#" id="link-to-signin">Sign in</a>
+        </p>
+      </form>
+
+      <!-- Sign In Form -->
+      <form id="form-signin" class="auth-form hidden">
+        <div class="form-header">
+          <h2 class="auth-title">Welcome Back</h2>
+          <p class="auth-subtitle">Sign in to view your token and dashboard.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="signin-email">Email Address</label>
+          <input type="email" id="signin-email" class="form-input" placeholder="name@example.com" required>
+        </div>
+
+        <div class="form-group">
+          <label for="signin-password">Password</label>
+          <input type="password" id="signin-password" class="form-input" placeholder="••••••••" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-block btn-lg" id="btn-submit-signin">
+          <span>Sign In to Dashboard</span>
+        </button>
+
+        <p class="auth-switch-text">
+          Don't have an account? <a href="#" id="link-to-signup">Sign up free</a>
+        </p>
+      </form>
+
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/app.js"></script>
+</body>
+</html>
