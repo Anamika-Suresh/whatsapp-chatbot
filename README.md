@@ -1,4 +1,4 @@
-# ⚡ Anam AI — WhatsApp Assistant SaaS Platform
+# Anam AI — WhatsApp Assistant SaaS Platform
 
 A multi-tenant **SaaS platform** that transforms a single WhatsApp number into an intelligent, multi-user AI assistant for all registered users. Built with **Node.js**, **Express**, **[Baileys](https://github.com/WhiskeySockets/Baileys)**, **SQLite**, and **[Google Gemini AI](https://aistudio.google.com)** (`gemini-3.6-flash`).
 
@@ -6,7 +6,7 @@ Designed & created by **Anamika Suresh**.
 
 ---
 
-## 🌟 SaaS Product Architecture
+## SaaS Product Architecture
 
 ```
                           ┌────────────────────────────────┐
@@ -26,40 +26,40 @@ Designed & created by **Anamika Suresh**.
    └──────────────────┘           └──────────────┘           └───────────────────┘
 ```
 
-### 🔑 How the SaaS Token Handshake Works:
+###  How the SaaS Token Handshake Works:
 1. **User Sign Up**: Any user registers on the Web Portal (`http://localhost:3000`) with their name, email, and password.
 2. **Instant Token Generation**: The platform generates a unique verification token (e.g. `ANAM-8K2Q9M`) displayed with a 1-click copy button on their dashboard.
 3. **WhatsApp Authentication**:
    - When a user first messages the bot's WhatsApp number, the bot recognizes that their phone number is not yet linked.
-   - The bot replies: *"👋 Welcome to Anam AI SaaS! Please reply with your verification token from your dashboard (e.g. ANAM-XXXXXX) to link your account."*
+   - The bot replies: *" Welcome to Anam AI SaaS! Please reply with your verification token from your dashboard (e.g. ANAM-XXXXXX) to link your account."*
    - When the user sends their token, the bot validates it against the database and instantly links their WhatsApp phone number.
-   - The user receives: *"🎉 Authentication Successful! Welcome, [Name]! Say 'Hey Anam' to begin!"*
+   - The user receives: *" Authentication Successful! Welcome, [Name]! Say 'Hey Anam' to begin!"*
 4. **Multi-Tenant Isolation**: Every user's tasks, alarms, timers, and conversational memory are stored in SQLite and isolated by `user_id`. One bot serves all registered users simultaneously without data leaks!
 5. **Bi-Directional Web & WhatsApp Sync**: Tasks or reminders added on WhatsApp appear on the web dashboard immediately, and items added on the web dashboard can be checked by asking the bot on WhatsApp (`"Hey Anam show tasks"`).
 
 ---
 
-## ✨ Features
+##  Features
 
-- 🌐 **Modern SaaS Web Application**:
+-  **Modern SaaS Web Application**:
   - Landing page with animated hero, interactive WhatsApp chat simulation mockup, and 3-step onboarding.
   - Tabbed Sign In / Sign Up modal with password hashing (`bcryptjs`) and secure JWT session management.
   - Protected User Dashboard with live connection status polling (automatically switches from 🔴 Unlinked to 🟢 Connected as soon as verified on WhatsApp).
   - Prominent Token Box with 1-click copy, token regeneration, and direct WhatsApp launch link (`https://wa.me/...`).
   - Interactive To-Do list and Reminders manager synced with WhatsApp.
-- 💬 **WhatsApp Bot Token Handshake**:
+-  **WhatsApp Bot Token Handshake**:
   - First-contact detection: Prompts unverified users to sign up and submit their token.
   - Auto-verification & phone linking.
   - Verification error handling with helpful guidance.
-- ⏰ **Clock Alarms with Name & Description**: Set exact time-of-day alarms (e.g., `Hey Anam 4pm reminder: name: Website analysis, description: Analyses given website and extract details`).
-- 🚨 **Timed Reminders**: Set countdown delay timers (e.g., `Hey Anam remind me in 10 minutes: name: Drink water, description: Stay hydrated`).
-- 📋 **Synced To-Do List Manager**: Persistently stores checklist tasks in SQLite synced across WhatsApp and Web (`add Website analysis to list`, `show tasks`, `done 1`).
-- 🧠 **Contextual Gemini AI Assistant**: Powered by Google Gemini 3.6 Flash with automatic failover, smart memory condensation, and function calling.
-- 📱 **Account Management via WhatsApp**: Type `!account` or `whoami` to view your SaaS plan and registered email, or `!unlink` to disconnect.
+-  **Clock Alarms with Name & Description**: Set exact time-of-day alarms (e.g., `Hey Anam 4pm reminder: name: Website analysis, description: Analyses given website and extract details`).
+-  **Timed Reminders**: Set countdown delay timers (e.g., `Hey Anam remind me in 10 minutes: name: Drink water, description: Stay hydrated`).
+-  **Synced To-Do List Manager**: Persistently stores checklist tasks in SQLite synced across WhatsApp and Web (`add Website analysis to list`, `show tasks`, `done 1`).
+-  **Contextual Gemini AI Assistant**: Powered by Google Gemini 3.6 Flash with automatic failover, smart memory condensation, and function calling.
+-  **Account Management via WhatsApp**: Type `!account` or `whoami` to view your SaaS plan and registered email, or `!unlink` to disconnect.
 
 ---
 
-## 🛠️ Project Structure
+##  Project Structure
 
 ```text
 whatsapp_bot/
@@ -81,7 +81,7 @@ whatsapp_bot/
 
 ---
 
-## 🚀 Quick Start Guide
+##  Quick Start Guide
 
 ### 1. Prerequisites
 - **Node.js** (v18 or higher; Node 24 includes native `node:sqlite`)
@@ -162,15 +162,15 @@ npm start
 4. Click **"Copy Token"**.
 5. Open WhatsApp from another phone/account and message the bot number.
 6. The bot will ask for your token:
-   > *"👋 Welcome to Anam AI SaaS! Please reply with your verification token from your dashboard..."*
+   > *" Welcome to Anam AI SaaS! Please reply with your verification token from your dashboard..."*
 7. Send your token `ANAM-A7K92M`.
 8. The bot immediately verifies you in SQLite and welcomes you:
-   > *"🎉 Authentication Successful! Welcome, [Name]! Say 'Hey Anam' to begin!"*
+   > *" Authentication Successful! Welcome, [Name]! Say 'Hey Anam' to begin!"*
 9. Notice your web dashboard automatically updates its badge to **🟢 WhatsApp Connected & Active** without needing a page refresh!
 
 ---
 
-## 💬 WhatsApp Command Cheatsheet
+##  WhatsApp Command Cheatsheet
 
 | Command | Action | Example |
 | :--- | :--- | :--- |
@@ -188,7 +188,7 @@ npm start
 
 ---
 
-## 📄 REST API Endpoints
+##  REST API Endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
@@ -209,6 +209,6 @@ npm start
 
 ---
 
-## 📜 License
 
-Distributed under the **ISC License**. Designed and developed by **[Anamika Suresh](https://github.com/Anamika-Suresh)**.
+
+Designed and developed by **[Anamika Suresh](https://github.com/Anamika-Suresh)**.
