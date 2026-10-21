@@ -1,4 +1,4 @@
-# Anam AI — WhatsApp Assistant SaaS Platform
+# WhatsApp AI Assistant SaaS Platform
 
 A multi-tenant **SaaS platform** that transforms a single WhatsApp number into an intelligent, multi-user AI assistant for all registered users. Built with **Node.js**, **Express**, **[Baileys](https://github.com/WhiskeySockets/Baileys)**, **SQLite**, and **[Google Gemini AI](https://aistudio.google.com)** (`gemini-3.6-flash`).
 
