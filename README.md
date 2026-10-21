@@ -51,23 +51,23 @@ Designed & created by **Anamika Suresh**.
   - First-contact detection: Prompts unverified users to sign up and submit their token.
   - Auto-verification & phone linking.
   - Verification error handling with helpful guidance.
-- ⏰ **Clock Alarms with Name & Description**: Set exact time-of-day alarms (e.g., `Hey Anam 4pm reminder: name: Website analysis, description: Analyses given website and extract details`).
-- 🚨 **Timed Reminders**: Set countdown delay timers (e.g., `Hey Anam remind me in 10 minutes: name: Drink water, description: Stay hydrated`).
-- 📋 **Synced To-Do List Manager**: Persistently stores checklist tasks in SQLite synced across WhatsApp and Web (`add Website analysis to list`, `show tasks`, `done 1`).
-- 🔷 **Atlassian Jira Cloud Integration**:
+-  **Clock Alarms with Name & Description**: Set exact time-of-day alarms (e.g., `Hey Anam 4pm reminder: name: Website analysis, description: Analyses given website and extract details`).
+-  **Timed Reminders**: Set countdown delay timers (e.g., `Hey Anam remind me in 10 minutes: name: Drink water, description: Stay hydrated`).
+-  **Synced To-Do List Manager**: Persistently stores checklist tasks in SQLite synced across WhatsApp and Web (`add Website analysis to list`, `show tasks`, `done 1`).
+-  **Atlassian Jira Cloud Integration**:
   - Create Jira issues, bugs, tasks, or stories directly through WhatsApp chat (`Hey Anam create a Jira bug in PROJ: Fix payment glitch`).
   - View assigned sprint tickets and tasks (`Hey Anam what are my Jira tickets?` or `jira list`).
   - Transition ticket statuses (`jira close PROJ-42` or `jira done PROJ-42`).
   - Comment on tickets and track progress in real time.
-- 📅 **Google Calendar Integration**:
+-  **Google Calendar Integration**:
   - List daily, tomorrow, or weekly agendas (`Hey Anam what's on my calendar today?` or `calendar today`).
   - Schedule meetings & events with time, duration, and meet links (`Hey Anam schedule meeting with Team tomorrow at 3pm for 45 mins`).
   - Cancel or delete scheduled events directly on WhatsApp (`calendar delete event`).
-- 📁 **Google Drive Cloud Storage**:
+-  **Google Drive Cloud Storage**:
   - OAuth 2.0 or Service Account connection with 15 GB storage quota.
   - Search files and folders, browse recent uploads, and download links (`Hey Anam find pitch deck on Drive` or `drive files`).
   - Create project folders directly from chat or the web portal (`drive folder Marketing 2026`).
-- 🎯 **Asana Task & Project Management**:
+-  **Asana Task & Project Management**:
   - View workspaces, projects, and active tasks across sprints (`asana tasks` or `Hey Anam what tasks do I have in Asana?`).
   - Create new tasks with due dates and project assignment (`asana add Finalize UI mocks due tomorrow`).
   - Mark tasks complete from WhatsApp in real time (`asana done [task ID]`).
@@ -75,8 +75,8 @@ Designed & created by **Anamika Suresh**.
   - Draft, preview, and send emails via Gmail App Password / SMTP directly from WhatsApp.
   - AI-assisted composing (`Hey Anam draft an email to client@example.com about project update`).
   - Draft review in Web Dashboard with one-click dispatch and live status tracking.
-- 🧠 **Contextual Gemini AI Assistant**: Powered by Google Gemini 3.6 Flash with automatic failover, smart memory condensation, and function calling.
-- 📱 **Account Management via WhatsApp**: Type `!account` or `whoami` to view your SaaS plan and registered email, or `!unlink` to disconnect.
+-  **Contextual Gemini AI Assistant**: Powered by Google Gemini 3.6 Flash with automatic failover, smart memory condensation, and function calling.
+-  **Account Management via WhatsApp**: Type `!account` or `whoami` to view your SaaS plan and registered email, or `!unlink` to disconnect.
 
 ---
 
