@@ -5,6 +5,16 @@ auth_info_baileys/
 # API Keys & Secrets
 .env
 .env.local
+.env.*
+client_secret*.json
+*client_secret*.json
+!client_secret.example.json
+credentials*.json
+token*.json
+*service_account*.json
+named-nomad-*.json
+*.pem
+*.key
 
 # Personal User Data
 todos.json

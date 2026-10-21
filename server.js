@@ -8,6 +8,42 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import db from "./db.js";
+import jiraService, { testJiraConnection, getJiraIssues, createJiraIssue } from "./services/jiraService.js";
+import googleCalendarService, { 
+  testCalendarConnection, 
+  listCalendarEvents, 
+  createCalendarEvent, 
+  createInstantGoogleMeet,
+  generateGoogleMeetLink,
+  findLocalServiceAccount, 
+  cleanPemKey, 
+  getEffectiveCalendarConfig 
+} from "./services/googleCalendarService.js";
+import googleDriveService, {
+  testDriveConnection,
+  listDriveFiles,
+  searchDriveFiles,
+  uploadDriveFile,
+  createDriveFolder,
+  shareDriveFile,
+  deleteDriveFile,
+  getEffectiveDriveConfig
+} from "./services/googleDriveService.js";
+import asanaService, {
+  testAsanaConnection,
+  getAsanaWorkspaces,
+  getAsanaProjects,
+  getAsanaTasks,
+  createAsanaTask,
+  updateAsanaTask,
+  createAsanaProject
+} from "./services/asanaService.js";
+import emailService, {
+  cleanAppPassword,
+  getEffectiveEmailConfig,
+  verifyEmailConnection,
+  sendEmail
+} from "./services/emailService.js";
 
 dotenv.config();
 
@@ -409,7 +445,7 @@ app.get("/api/user/reminders", authenticateToken, (req, res) => {
 });
 
 // Add Reminder
-app.post("/api/user/reminders", authenticateToken, (req, res) => {
+app.post("/api/user/reminders", authenticateToken, async (req, res) => {
   try {
     const { name, description, targetTimestamp } = req.body;
     if (!name || !targetTimestamp) {
@@ -423,7 +459,28 @@ app.post("/api/user/reminders", authenticateToken, (req, res) => {
     try {
       fs.writeFileSync(path.join(__dirname, ".reminders_sync"), String(Date.now()));
     } catch (e) {}
-    return res.status(201).json({ success: true, reminder });
+
+    // Auto-sync with Google Calendar if configured
+    let calSynced = false;
+    try {
+      const calConfig = db.getUserIntegration(req.user.id, "google_calendar");
+      const effCal = getEffectiveCalendarConfig(calConfig);
+      if (effCal.isConfigured) {
+        const calEvent = await createCalendarEvent(calConfig, {
+          summary: `⏰ ${name}`,
+          description: description ? `${description}\n\n[Created via Anam AI Web Dashboard]` : "Created via Anam AI Web Dashboard",
+          startDateTime: new Date(Number(targetTimestamp)).toISOString(),
+          durationMinutes: 30
+        });
+        if (calEvent && calEvent.id) {
+          calSynced = true;
+        }
+      }
+    } catch (calErr) {
+      console.warn("[Dashboard Reminder Cal Sync Notice]:", calErr.message);
+    }
+
+    return res.status(201).json({ success: true, reminder, calSynced });
   } catch (err) {
     return res.status(500).json({ success: false, error: "Failed to schedule reminder" });
   }
@@ -440,6 +497,909 @@ app.delete("/api/user/reminders/:id", authenticateToken, (req, res) => {
     return res.json({ success: true, message: "Reminder deleted" });
   } catch (err) {
     return res.status(500).json({ success: false, error: "Failed to delete reminder" });
+  }
+});
+
+// ---------------- PLATFORM INTEGRATIONS (JIRA, GOOGLE CALENDAR) ----------------
+
+// Get user integration statuses
+app.get("/api/user/integrations", authenticateToken, (req, res) => {
+  try {
+    const jiraConfig = db.getUserIntegration(req.user.id, "jira");
+    const calendarConfig = db.getUserIntegration(req.user.id, "google_calendar");
+    const asanaConfig = db.getUserIntegration(req.user.id, "asana");
+
+    // Check global fallbacks
+    const hasGlobalJira = Boolean(process.env.JIRA_HOST && process.env.JIRA_EMAIL && process.env.JIRA_API_TOKEN);
+    const hasGlobalCalendar = Boolean(
+      (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) ||
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON
+    );
+    const hasGlobalAsana = Boolean(process.env.ASANA_ACCESS_TOKEN);
+
+    const jiraStatus = {
+      platform: "jira",
+      connected: Boolean(jiraConfig?.apiToken) || hasGlobalJira,
+      isGlobal: !jiraConfig?.apiToken && hasGlobalJira,
+      host: jiraConfig?.host || process.env.JIRA_HOST || "",
+      email: jiraConfig?.email || process.env.JIRA_EMAIL || "",
+      defaultProject: jiraConfig?.defaultProject || process.env.JIRA_DEFAULT_PROJECT || "",
+      hasToken: Boolean(jiraConfig?.apiToken || process.env.JIRA_API_TOKEN),
+      updatedAt: jiraConfig?.updatedAt || null
+    };
+
+    const calendarStatus = {
+      platform: "google_calendar",
+      connected: Boolean((calendarConfig?.clientEmail && calendarConfig?.privateKey) || calendarConfig?.serviceAccountJson || calendarConfig?.accessToken) || hasGlobalCalendar,
+      isGlobal: !calendarConfig?.clientEmail && hasGlobalCalendar,
+      calendarId: calendarConfig?.calendarId || process.env.GOOGLE_CALENDAR_ID || "primary",
+      clientEmail: calendarConfig?.clientEmail || process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "",
+      hasCredentials: Boolean(
+        (calendarConfig?.clientEmail && calendarConfig?.privateKey) ||
+        calendarConfig?.serviceAccountJson ||
+        calendarConfig?.accessToken ||
+        hasGlobalCalendar
+      ),
+      updatedAt: calendarConfig?.updatedAt || null
+    };
+
+    const asanaStatus = {
+      platform: "asana",
+      connected: Boolean(asanaConfig?.accessToken) || hasGlobalAsana,
+      isGlobal: !asanaConfig?.accessToken && hasGlobalAsana,
+      workspaceId: asanaConfig?.workspaceId || process.env.ASANA_DEFAULT_WORKSPACE || "",
+      defaultProject: asanaConfig?.defaultProject || process.env.ASANA_DEFAULT_PROJECT || "",
+      defaultProjectName: asanaConfig?.defaultProjectName || "",
+      userName: asanaConfig?.userName || "",
+      userEmail: asanaConfig?.userEmail || "",
+      hasToken: Boolean(asanaConfig?.accessToken || process.env.ASANA_ACCESS_TOKEN),
+      updatedAt: asanaConfig?.updatedAt || null
+    };
+
+    const emailConfig = db.getUserIntegration(req.user.id, "email");
+    const hasGlobalEmail = Boolean(
+      (process.env.GMAIL_USER || process.env.EMAIL_USER) &&
+      (process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_APP_PASSWORD)
+    );
+
+    const emailStatus = {
+      platform: "email",
+      connected: Boolean(emailConfig?.email && emailConfig?.appPassword) || hasGlobalEmail,
+      isGlobal: !(emailConfig?.email && emailConfig?.appPassword) && hasGlobalEmail,
+      email: emailConfig?.email || process.env.GMAIL_USER || process.env.EMAIL_USER || "",
+      senderName: emailConfig?.senderName || process.env.EMAIL_SENDER_NAME || "",
+      hasPassword: Boolean(emailConfig?.appPassword || process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_APP_PASSWORD),
+      updatedAt: emailConfig?.updatedAt || null
+    };
+
+    const driveConfig = db.getUserIntegration(req.user.id, "google_drive");
+    const localDriveSA = findLocalServiceAccount();
+    const hasGlobalDrive = Boolean(
+      (process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_DRIVE_PRIVATE_KEY) ||
+      (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) ||
+      process.env.GOOGLE_SERVICE_ACCOUNT_JSON ||
+      localDriveSA
+    );
+
+    const driveStatus = {
+      platform: "google_drive",
+      connected: Boolean(
+        (driveConfig?.clientEmail && driveConfig?.privateKey) ||
+        driveConfig?.serviceAccountJson ||
+        driveConfig?.accessToken ||
+        hasGlobalDrive
+      ),
+      isGlobal: !(driveConfig?.clientEmail && driveConfig?.privateKey) && hasGlobalDrive,
+      folderId: driveConfig?.folderId || process.env.GOOGLE_DRIVE_FOLDER_ID || "",
+      clientEmail: driveConfig?.clientEmail || localDriveSA?.client_email || process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "",
+      hasCredentials: Boolean(
+        (driveConfig?.clientEmail && driveConfig?.privateKey) ||
+        driveConfig?.serviceAccountJson ||
+        driveConfig?.accessToken ||
+        hasGlobalDrive
+      ),
+      updatedAt: driveConfig?.updatedAt || null
+    };
+
+    return res.json({
+      success: true,
+      integrations: {
+        jira: jiraStatus,
+        google_calendar: calendarStatus,
+        google_drive: driveStatus,
+        asana: asanaStatus,
+        email: emailStatus
+      }
+    });
+  } catch (err) {
+    console.error("[Get Integrations Error]", err);
+    return res.status(500).json({ success: false, error: "Failed to fetch integrations" });
+  }
+});
+
+// Save or Update Jira Settings
+app.post("/api/user/integrations/jira", authenticateToken, async (req, res) => {
+  try {
+    const { host, email, apiToken, defaultProject } = req.body;
+    if (!host || !email) {
+      return res.status(400).json({ success: false, error: "Jira Host and Account Email are required." });
+    }
+
+    const existing = db.getUserIntegration(req.user.id, "jira") || {};
+    let finalToken = apiToken;
+    if (!finalToken || finalToken === "••••••••") {
+      finalToken = existing.apiToken || process.env.JIRA_API_TOKEN || "";
+    }
+
+    if (!finalToken) {
+      return res.status(400).json({ success: false, error: "Jira API Token is required." });
+    }
+
+    let cleanProj = (defaultProject || "").trim().toUpperCase();
+    if (cleanProj.includes("-")) {
+      cleanProj = cleanProj.split("-")[0].trim();
+    }
+
+    const configObj = {
+      host: host.trim(),
+      email: email.trim(),
+      apiToken: finalToken.trim(),
+      defaultProject: cleanProj
+    };
+
+    db.saveUserIntegration(req.user.id, "jira", configObj, 1);
+
+    return res.json({
+      success: true,
+      message: "Jira integration saved successfully!",
+      integration: {
+        platform: "jira",
+        host: configObj.host,
+        email: configObj.email,
+        defaultProject: configObj.defaultProject,
+        connected: true
+      }
+    });
+  } catch (err) {
+    console.error("[Save Jira Error]", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to save Jira settings" });
+  }
+});
+
+// Test Jira Connection
+app.post("/api/user/integrations/jira/test", authenticateToken, async (req, res) => {
+  try {
+    const existing = db.getUserIntegration(req.user.id, "jira") || {};
+    const host = req.body.host || existing.host;
+    const email = req.body.email || existing.email;
+    let apiToken = req.body.apiToken;
+    if (!apiToken || apiToken === "••••••••") {
+      apiToken = existing.apiToken;
+    }
+
+    const result = await testJiraConnection({ host, email, apiToken });
+    return res.json({
+      success: true,
+      message: `Connected successfully to Jira as ${result.displayName} (${result.emailAddress})!`,
+      details: result
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      error: err.message || "Could not connect to Jira. Check your domain, email, and API token."
+    });
+  }
+});
+
+// Disconnect Jira
+app.delete("/api/user/integrations/jira", authenticateToken, (req, res) => {
+  try {
+    db.deleteUserIntegration(req.user.id, "jira");
+    return res.json({ success: true, message: "Jira integration disconnected." });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Failed to disconnect Jira" });
+  }
+});
+
+// Auto-detect local service account credentials
+app.get("/api/user/integrations/google_calendar/auto-detect", authenticateToken, (req, res) => {
+  try {
+    const localSA = findLocalServiceAccount();
+    if (!localSA) {
+      return res.json({ success: false, message: "No Google Service Account JSON file detected in the workspace." });
+    }
+
+    return res.json({
+      success: true,
+      detected: true,
+      fileName: localSA.fileName,
+      clientEmail: localSA.client_email,
+      privateKey: cleanPemKey(localSA.private_key),
+      projectId: localSA.project_id,
+      suggestedCalendarId: req.user.email || "primary"
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Save or Update Google Calendar Settings
+app.post("/api/user/integrations/google_calendar", authenticateToken, async (req, res) => {
+  try {
+    const { calendarId, clientEmail, privateKey, serviceAccountJson, accessToken } = req.body;
+    const existing = db.getUserIntegration(req.user.id, "google_calendar") || {};
+
+    let finalKey = privateKey;
+    if (!finalKey || finalKey === "••••••••") {
+      finalKey = existing.privateKey || "";
+    }
+    if (finalKey) {
+      finalKey = cleanPemKey(finalKey);
+    }
+
+    let finalEmail = (clientEmail || existing.clientEmail || "").trim();
+    let finalCalId = (calendarId || existing.calendarId || "primary").trim();
+
+    // Auto-detect from local SA file if needed or if user mistakenly put their personal email into clientEmail
+    const localSA = findLocalServiceAccount();
+    if (localSA) {
+      if (finalEmail && !finalEmail.includes("gserviceaccount.com") && finalEmail.includes("@")) {
+        if (finalCalId === "primary" || !finalCalId) {
+          finalCalId = finalEmail;
+        }
+        finalEmail = localSA.client_email;
+      }
+      if (!finalEmail) {
+        finalEmail = localSA.client_email;
+      }
+      if (!finalKey || !finalKey.includes("BEGIN")) {
+        finalKey = cleanPemKey(localSA.private_key);
+      }
+    }
+
+    const configObj = {
+      calendarId: finalCalId,
+      clientEmail: finalEmail,
+      privateKey: finalKey,
+      serviceAccountJson: serviceAccountJson ? serviceAccountJson.trim() : (existing.serviceAccountJson || ""),
+      accessToken: accessToken ? accessToken.trim() : (existing.accessToken || "")
+    };
+
+    db.saveUserIntegration(req.user.id, "google_calendar", configObj, 1);
+
+    return res.json({
+      success: true,
+      message: "Google Calendar integration saved successfully!",
+      integration: {
+        platform: "google_calendar",
+        calendarId: configObj.calendarId,
+        clientEmail: configObj.clientEmail,
+        connected: true
+      }
+    });
+  } catch (err) {
+    console.error("[Save Calendar Error]", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to save Google Calendar settings" });
+  }
+});
+
+// Test Google Calendar Connection
+app.post("/api/user/integrations/google_calendar/test", authenticateToken, async (req, res) => {
+  try {
+    const existing = db.getUserIntegration(req.user.id, "google_calendar") || {};
+    const calendarId = req.body.calendarId || existing.calendarId || "primary";
+    const clientEmail = req.body.clientEmail || existing.clientEmail;
+    let privateKey = req.body.privateKey;
+    if (!privateKey || privateKey === "••••••••") {
+      privateKey = existing.privateKey;
+    }
+    const serviceAccountJson = req.body.serviceAccountJson || existing.serviceAccountJson;
+    const accessToken = req.body.accessToken || existing.accessToken;
+
+    const result = await testCalendarConnection({ calendarId, clientEmail, privateKey, serviceAccountJson, accessToken });
+    return res.json({
+      success: true,
+      message: `Connected successfully to Google Calendar "${result.summary || result.calendarId}"!`,
+      details: result
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      error: err.message || "Could not connect to Google Calendar. Check your service account credentials or permissions."
+    });
+  }
+});
+
+// Disconnect Google Calendar
+app.delete("/api/user/integrations/google_calendar", authenticateToken, (req, res) => {
+  try {
+    db.deleteUserIntegration(req.user.id, "google_calendar");
+    return res.json({ success: true, message: "Google Calendar integration disconnected." });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Failed to disconnect Google Calendar" });
+  }
+});
+
+// Fetch Jira tickets preview for dashboard
+app.get("/api/user/integrations/jira/issues", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "jira");
+    const result = await getJiraIssues(config, { maxResults: 10 });
+    return res.json({ success: true, issues: result.issues, total: result.total, host: result.host });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Fetch Calendar events preview for dashboard
+app.get("/api/user/integrations/calendar/events", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "google_calendar");
+    const timeFrame = req.query.timeFrame || "today";
+    const result = await listCalendarEvents(config, { timeFrame, maxResults: 15 });
+    return res.json({ success: true, events: result.events, timeFrame: result.timeFrame });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Create Instant Google Meet link & Calendar event
+app.post("/api/user/integrations/calendar/instant-meet", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "google_calendar");
+    const summary = (req.body.summary || "Instant Google Meet").trim();
+    const durationMinutes = parseInt(req.body.durationMinutes || 30, 10);
+    const meet = await createInstantGoogleMeet(config, { summary, durationMinutes });
+    return res.json({
+      success: true,
+      message: "Google Meet link generated and scheduled successfully!",
+      meet
+    });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ---------------- GOOGLE DRIVE ROUTES ----------------
+
+// Auto-detect local service account credentials for Google Drive
+app.get("/api/user/integrations/google_drive/auto-detect", authenticateToken, (req, res) => {
+  try {
+    const localSA = findLocalServiceAccount();
+    if (!localSA) {
+      return res.json({ success: false, message: "No Google Service Account JSON file detected in the workspace." });
+    }
+
+    return res.json({
+      success: true,
+      detected: true,
+      fileName: localSA.fileName,
+      clientEmail: localSA.client_email,
+      privateKey: cleanPemKey(localSA.private_key),
+      projectId: localSA.project_id
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Save or Update Google Drive Settings
+app.post("/api/user/integrations/google_drive", authenticateToken, async (req, res) => {
+  try {
+    const { folderId, clientEmail, privateKey, serviceAccountJson, accessToken, refreshToken, clientId, clientSecret } = req.body;
+    const existing = db.getUserIntegration(req.user.id, "google_drive") || {};
+
+    let finalKey = privateKey;
+    if (!finalKey || finalKey === "••••••••") {
+      finalKey = existing.privateKey || "";
+    }
+    if (finalKey) {
+      finalKey = cleanPemKey(finalKey);
+    }
+
+    let finalEmail = (clientEmail || existing.clientEmail || "").trim();
+    let finalFolderId = (folderId !== undefined ? folderId : (existing.folderId || "")).trim();
+
+    // Auto-detect from local SA file if needed
+    const localSA = findLocalServiceAccount();
+    if (localSA) {
+      if (!finalEmail) {
+        finalEmail = localSA.client_email;
+      }
+      if (!finalKey || !finalKey.includes("BEGIN")) {
+        finalKey = cleanPemKey(localSA.private_key);
+      }
+    }
+
+    const configObj = {
+      folderId: finalFolderId,
+      clientEmail: finalEmail,
+      privateKey: finalKey,
+      serviceAccountJson: serviceAccountJson ? serviceAccountJson.trim() : (existing.serviceAccountJson || ""),
+      accessToken: accessToken ? accessToken.trim() : (existing.accessToken || ""),
+      refreshToken: refreshToken ? refreshToken.trim() : (existing.refreshToken || ""),
+      clientId: clientId ? clientId.trim() : (existing.clientId || ""),
+      clientSecret: clientSecret ? clientSecret.trim() : (existing.clientSecret || "")
+    };
+
+    db.saveUserIntegration(req.user.id, "google_drive", configObj, 1);
+
+    return res.json({
+      success: true,
+      message: "Google Drive integration saved successfully!",
+      integration: {
+        platform: "google_drive",
+        folderId: configObj.folderId,
+        clientEmail: configObj.clientEmail,
+        connected: true
+      }
+    });
+  } catch (err) {
+    console.error("[Save Drive Error]", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to save Google Drive settings" });
+  }
+});
+
+// Test Google Drive Connection
+app.post("/api/user/integrations/google_drive/test", authenticateToken, async (req, res) => {
+  try {
+    const existing = db.getUserIntegration(req.user.id, "google_drive") || {};
+    const clientEmail = req.body.clientEmail || existing.clientEmail;
+    let privateKey = req.body.privateKey;
+    if (!privateKey || privateKey === "••••••••") {
+      privateKey = existing.privateKey;
+    }
+    const folderId = req.body.folderId !== undefined ? req.body.folderId : existing.folderId;
+    const serviceAccountJson = req.body.serviceAccountJson || existing.serviceAccountJson;
+    const accessToken = req.body.accessToken || existing.accessToken;
+    const refreshToken = req.body.refreshToken || existing.refreshToken;
+    const clientId = req.body.clientId || existing.clientId;
+    const clientSecret = req.body.clientSecret || existing.clientSecret;
+
+    const result = await testDriveConnection({ clientEmail, privateKey, folderId, serviceAccountJson, accessToken, refreshToken, clientId, clientSecret });
+    return res.json({
+      success: true,
+      message: `Connected successfully to Google Drive (${result.clientEmail})!`,
+      details: result
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      error: err.message || "Could not connect to Google Drive. Check your service account credentials or permissions."
+    });
+  }
+});
+
+// Disconnect Google Drive
+app.delete("/api/user/integrations/google_drive", authenticateToken, (req, res) => {
+  try {
+    db.deleteUserIntegration(req.user.id, "google_drive");
+    return res.json({ success: true, message: "Google Drive integration disconnected." });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Failed to disconnect Google Drive" });
+  }
+});
+
+// List Files for Dashboard Preview
+app.get("/api/user/integrations/google_drive/files", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "google_drive");
+    const query = req.query.query || "";
+    const folderId = req.query.folderId !== undefined ? req.query.folderId : undefined;
+    const result = await listDriveFiles(config, { query, folderId, pageSize: 20 });
+    return res.json({ success: true, files: result.files, total: result.total, folderId: result.folderId });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Create Folder via Dashboard
+app.post("/api/user/integrations/google_drive/folder", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "google_drive");
+    const folderName = (req.body.folderName || "").trim();
+    const parentFolderId = req.body.parentFolderId || undefined;
+    const folder = await createDriveFolder(config, { folderName, parentFolderId });
+    return res.json({ success: true, folder, message: `Folder "${folder.name}" created!` });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ---------------- ASANA ROUTES ----------------
+
+// Save or Update Asana Settings
+app.post("/api/user/integrations/asana", authenticateToken, async (req, res) => {
+  try {
+    const { accessToken, workspaceId, defaultProject, defaultProjectName } = req.body;
+    const existing = db.getUserIntegration(req.user.id, "asana") || {};
+
+    let finalToken = accessToken ? accessToken.trim() : "";
+    if (!finalToken) {
+      finalToken = existing.accessToken || process.env.ASANA_ACCESS_TOKEN || "";
+    }
+
+    if (!finalToken) {
+      return res.status(400).json({ success: false, error: "Asana Personal Access Token is required." });
+    }
+
+    // Verify token with Asana
+    let profile = null;
+    try {
+      profile = await testAsanaConnection({ accessToken: finalToken });
+    } catch (testErr) {
+      return res.status(400).json({
+        success: false,
+        error: `Could not verify Asana token: ${testErr.message}`
+      });
+    }
+
+    let finalWorkspace = (workspaceId || existing.workspaceId || "").trim();
+    if (!finalWorkspace && profile.workspaces && profile.workspaces.length > 0) {
+      finalWorkspace = profile.workspaces[0].gid;
+    }
+
+    const configObj = {
+      accessToken: finalToken,
+      workspaceId: finalWorkspace,
+      defaultProject: (defaultProject || existing.defaultProject || "").trim(),
+      defaultProjectName: (defaultProjectName || existing.defaultProjectName || "").trim(),
+      userName: profile.name,
+      userEmail: profile.email
+    };
+
+    db.saveUserIntegration(req.user.id, "asana", configObj, 1);
+
+    return res.json({
+      success: true,
+      message: `Asana connected successfully for ${profile.name}!`,
+      integration: {
+        platform: "asana",
+        connected: true,
+        userName: profile.name,
+        userEmail: profile.email,
+        workspaceId: configObj.workspaceId,
+        defaultProject: configObj.defaultProject,
+        defaultProjectName: configObj.defaultProjectName,
+        workspaces: profile.workspaces
+      }
+    });
+  } catch (err) {
+    console.error("[Save Asana Error]", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to save Asana settings" });
+  }
+});
+
+// Test Asana Connection
+app.post("/api/user/integrations/asana/test", authenticateToken, async (req, res) => {
+  try {
+    const existing = db.getUserIntegration(req.user.id, "asana") || {};
+    const accessToken = req.body.accessToken ? req.body.accessToken.trim() : (existing.accessToken || process.env.ASANA_ACCESS_TOKEN || "");
+
+    if (!accessToken) {
+      return res.status(400).json({ success: false, error: "Please enter your Asana Personal Access Token." });
+    }
+
+    const profile = await testAsanaConnection({ accessToken });
+    let projects = [];
+    let activeWorkspace = req.body.workspaceId || existing.workspaceId;
+    if (!activeWorkspace && profile.workspaces && profile.workspaces.length > 0) {
+      activeWorkspace = profile.workspaces[0].gid;
+    }
+
+    if (activeWorkspace) {
+      try {
+        projects = await getAsanaProjects({ accessToken, workspaceId: activeWorkspace }, activeWorkspace);
+      } catch (pErr) {
+        console.warn("[Asana Test Projects Warning]:", pErr.message);
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Connected successfully to Asana as ${profile.name} (${profile.email || "User"})!`,
+      profile,
+      projects
+    });
+  } catch (err) {
+    return res.status(400).json({
+      success: false,
+      error: err.message || "Could not connect to Asana. Please check your Personal Access Token."
+    });
+  }
+});
+
+// Fetch Asana projects for workspace
+app.get("/api/user/integrations/asana/projects", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "asana");
+    const workspaceId = req.query.workspaceId || config?.workspaceId;
+    const projects = await getAsanaProjects(config, workspaceId);
+    return res.json({ success: true, projects });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Create new Asana project
+app.post("/api/user/integrations/asana/projects", authenticateToken, async (req, res) => {
+  try {
+    const { name, notes, color, workspaceId } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: "Project name is required." });
+    }
+    const config = db.getUserIntegration(req.user.id, "asana");
+    const project = await createAsanaProject(config, {
+      name: name.trim(),
+      notes: notes || "",
+      color: color || "light-blue",
+      workspaceGid: workspaceId || config?.workspaceId
+    });
+    return res.json({ success: true, message: `Project "${project.name}" created in Asana!`, project });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Update Asana task (e.g. title, notes, due date, completed)
+app.put("/api/user/integrations/asana/tasks/:taskGid", authenticateToken, async (req, res) => {
+  try {
+    const { taskGid } = req.params;
+    const { name, notes, dueOn, completed } = req.body;
+    const config = db.getUserIntegration(req.user.id, "asana");
+    const updated = await updateAsanaTask(config, taskGid, { name, notes, dueOn, completed });
+    return res.json({ success: true, message: `Task "${updated.name}" updated in Asana!`, task: updated });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Fetch Asana tasks preview for dashboard
+app.get("/api/user/integrations/asana/tasks", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "asana");
+    const result = await getAsanaTasks(config, { maxResults: 15 });
+    return res.json({ success: true, tasks: result.tasks, total: result.total });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Disconnect Asana
+app.delete("/api/user/integrations/asana", authenticateToken, (req, res) => {
+  try {
+    db.deleteUserIntegration(req.user.id, "asana");
+    return res.json({ success: true, message: "Asana integration disconnected." });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Failed to disconnect Asana" });
+  }
+});
+
+// ---------------- EMAIL / GMAIL INTEGRATION ----------------
+
+// Save Email Settings
+app.post("/api/user/integrations/email", authenticateToken, async (req, res) => {
+  try {
+    const { email, appPassword, senderName } = req.body;
+    if (!email || !email.trim() || !email.includes("@")) {
+      return res.status(400).json({ success: false, error: "Valid Gmail address is required." });
+    }
+
+    const existing = db.getUserIntegration(req.user.id, "email") || {};
+    let finalPass = appPassword;
+    if (!finalPass || finalPass === "••••••••") {
+      finalPass = existing.appPassword || process.env.GMAIL_APP_PASSWORD || "";
+    }
+    finalPass = cleanAppPassword(finalPass);
+
+    if (!finalPass) {
+      const configObj = {
+        email: email.trim(),
+        appPassword: "",
+        senderName: (senderName || "").trim() || "Anamika"
+      };
+      db.saveUserIntegration(req.user.id, "email", configObj, 0);
+      return res.json({
+        success: true,
+        warning: true,
+        message: `Email address saved as ${email.trim()}! Please provide your 16-character Google App Password to connect.`,
+        integration: {
+          platform: "email",
+          email: configObj.email,
+          senderName: configObj.senderName,
+          connected: false
+        }
+      });
+    }
+
+    // Attempt connection verification
+    let verified = false;
+    let warning = "";
+    try {
+      await verifyEmailConnection({ email: email.trim(), appPassword: finalPass, senderName });
+      verified = true;
+    } catch (verErr) {
+      warning = verErr.message;
+    }
+
+    const configObj = {
+      email: email.trim(),
+      appPassword: finalPass,
+      senderName: (senderName || "").trim() || "Anamika"
+    };
+
+    db.saveUserIntegration(req.user.id, "email", configObj, 1);
+
+    if (!verified) {
+      return res.json({
+        success: true,
+        warning: true,
+        message: `Email updated to ${email.trim()}! Note: Verification returned: ${warning}`,
+        integration: {
+          platform: "email",
+          email: configObj.email,
+          senderName: configObj.senderName,
+          connected: false
+        }
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: `Gmail (${email.trim()}) connected successfully! You can now draft and send emails via WhatsApp.`,
+      integration: {
+        platform: "email",
+        email: configObj.email,
+        senderName: configObj.senderName,
+        connected: true
+      }
+    });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Test Email Connection
+app.post("/api/user/integrations/email/test", authenticateToken, async (req, res) => {
+  try {
+    const { email, appPassword } = req.body;
+    const existing = db.getUserIntegration(req.user.id, "email") || {};
+    let targetEmail = (email || existing.email || process.env.GMAIL_USER || "").trim();
+    let finalPass = appPassword;
+    if (!finalPass || finalPass === "••••••••") {
+      finalPass = existing.appPassword || process.env.GMAIL_APP_PASSWORD || "";
+    }
+    finalPass = cleanAppPassword(finalPass);
+
+    if (!targetEmail || !finalPass) {
+      return res.status(400).json({ success: false, error: "Gmail address and App Password are required to test." });
+    }
+
+    await verifyEmailConnection({ email: targetEmail, appPassword: finalPass });
+    return res.json({ success: true, message: `Connected to Gmail as ${targetEmail}! Authentication verified.` });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Send Test Email
+app.post("/api/user/integrations/email/send-test", authenticateToken, async (req, res) => {
+  try {
+    const config = db.getUserIntegration(req.user.id, "email");
+    const eff = getEffectiveEmailConfig(config);
+    if (!eff.isConfigured) {
+      return res.status(400).json({ success: false, error: "Email is not configured. Please save credentials first." });
+    }
+
+    const testSubject = "Test Email from Anam AI Bot";
+    const testBody = `Hello!\n\nThis is a test email sent from your Anam AI WhatsApp Assistant.\nYour Gmail integration is working perfectly and ready to draft & send emails.\n\nBest regards,\nAnam AI`;
+
+    const result = await sendEmail(config, {
+      to: eff.email,
+      subject: testSubject,
+      body: testBody
+    });
+
+    return res.json({ success: true, message: `Test email sent successfully to ${eff.email}!`, result });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Disconnect Email
+app.delete("/api/user/integrations/email", authenticateToken, (req, res) => {
+  try {
+    db.deleteUserIntegration(req.user.id, "email");
+    return res.json({ success: true, message: "Email integration disconnected." });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Failed to disconnect email" });
+  }
+});
+
+// Get User Email Drafts
+app.get("/api/user/integrations/email/drafts", authenticateToken, (req, res) => {
+  try {
+    const drafts = db.getUserEmailDrafts(req.user.id, "draft");
+    return res.json({ success: true, drafts, total: drafts.length });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Create Email Draft
+app.post("/api/user/integrations/email/drafts", authenticateToken, (req, res) => {
+  try {
+    const { recipient, subject, body } = req.body;
+    if (!recipient || !recipient.trim()) {
+      return res.status(400).json({ success: false, error: "Recipient email is required." });
+    }
+    const draft = db.createEmailDraft(req.user.id, recipient, subject || "", body || "");
+    return res.json({ success: true, message: "Draft created successfully!", draft });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Update Email Draft
+app.put("/api/user/integrations/email/drafts/:id", authenticateToken, (req, res) => {
+  try {
+    const draftId = parseInt(req.params.id, 10);
+    const updated = db.updateEmailDraft(draftId, req.user.id, req.body);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Draft not found." });
+    }
+    return res.json({ success: true, message: "Draft updated!", draft: updated });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Delete Email Draft
+app.delete("/api/user/integrations/email/drafts/:id", authenticateToken, (req, res) => {
+  try {
+    const draftId = parseInt(req.params.id, 10);
+    db.deleteEmailDraft(draftId, req.user.id);
+    return res.json({ success: true, message: "Draft deleted." });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Send Email (Directly or from Draft)
+app.post("/api/user/integrations/email/send", authenticateToken, async (req, res) => {
+  try {
+    const { draftId, to, subject, body, cc, bcc } = req.body;
+    const config = db.getUserIntegration(req.user.id, "email");
+
+    let finalTo = to;
+    let finalSubject = subject;
+    let finalBody = body;
+
+    if (draftId) {
+      const draft = db.getEmailDraftById(parseInt(draftId, 10), req.user.id);
+      if (!draft) {
+        return res.status(404).json({ success: false, error: `Draft #${draftId} not found.` });
+      }
+      finalTo = finalTo || draft.recipient;
+      finalSubject = finalSubject || draft.subject;
+      finalBody = finalBody || draft.body;
+    }
+
+    const result = await sendEmail(config, {
+      to: finalTo,
+      subject: finalSubject,
+      body: finalBody,
+      cc,
+      bcc
+    });
+
+    if (draftId) {
+      db.updateEmailDraft(parseInt(draftId, 10), req.user.id, { status: "sent" });
+    }
+
+    return res.json({ success: true, message: `Email sent to ${finalTo}!`, result });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
   }
 });
 

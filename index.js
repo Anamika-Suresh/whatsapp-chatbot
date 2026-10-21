@@ -7,6 +7,68 @@ import path from "path";
 import dotenv from "dotenv";
 import { execSync } from "child_process";
 import db from "./db.js";
+import jiraService, {
+    getEffectiveJiraConfig,
+    createJiraIssue,
+    getJiraIssues,
+    getJiraIssue,
+    transitionJiraIssue,
+    addJiraComment,
+    formatIssuesForWhatsApp,
+    formatSingleIssueForWhatsApp,
+    formatCreatedIssueForWhatsApp,
+    formatTransitionForWhatsApp
+} from "./services/jiraService.js";
+import googleCalendarService, {
+    getEffectiveCalendarConfig,
+    listCalendarEvents,
+    createCalendarEvent,
+    createInstantGoogleMeet,
+    deleteCalendarEvent,
+    generateGoogleMeetLink,
+    formatEventsForWhatsApp,
+    formatCreatedEventForWhatsApp,
+    formatInstantMeetForWhatsApp
+} from "./services/googleCalendarService.js";
+import googleDriveService, {
+    getEffectiveDriveConfig,
+    listDriveFiles,
+    searchDriveFiles,
+    uploadDriveFile,
+    createDriveFolder,
+    shareDriveFile,
+    deleteDriveFile,
+    formatDriveFilesForWhatsApp,
+    formatUploadedFileForWhatsApp,
+    formatFolderCreatedForWhatsApp,
+    formatDriveApiError
+} from "./services/googleDriveService.js";
+import asanaService, {
+    getEffectiveAsanaConfig,
+    getAsanaTasks,
+    getAsanaTask,
+    createAsanaTask,
+    completeAsanaTask,
+    updateAsanaTask,
+    createAsanaProject,
+    addAsanaComment,
+    formatAsanaTasksForWhatsApp,
+    formatSingleAsanaTaskForWhatsApp,
+    formatCreatedAsanaTaskForWhatsApp,
+    formatCompletedAsanaTaskForWhatsApp,
+    formatCreatedAsanaProjectForWhatsApp,
+    formatUpdatedAsanaTaskForWhatsApp
+} from "./services/asanaService.js";
+import emailService, {
+    getEffectiveEmailConfig,
+    sendEmail,
+    formatDraftForWhatsApp,
+    formatSentEmailForWhatsApp,
+    formatDraftListForWhatsApp,
+    generateEmailDraftContent,
+    verifyEmailConnection,
+    cleanAppPassword
+} from "./services/emailService.js";
 
 dotenv.config();
 
@@ -154,6 +216,287 @@ async function condenseSessionMemory(sender) {
 // 5. Pending Media & Tomorrow Sessions
 const pendingMediaSessions = new Map();
 const pendingTomorrowSessions = new Map();
+const lastJiraIssuesBySender = new Map(); // sender -> Array of recent Jira issue objects
+const lastAsanaTasksBySender = new Map(); // sender -> Array of recent Asana task objects
+
+function resolveJiraIssueKey(sender, keyOrIndex, defaultProject = "") {
+    if (!keyOrIndex) return null;
+    let raw = keyOrIndex.trim();
+
+    // Check if it's a number (1-based index or ticket number)
+    if (/^\d+$/.test(raw)) {
+        const idx = parseInt(raw, 10);
+        const cached = lastJiraIssuesBySender.get(sender);
+        if (cached && idx >= 1 && idx <= cached.length) {
+            return cached[idx - 1].key;
+        }
+        if (defaultProject) {
+            return `${defaultProject}-${idx}`.toUpperCase();
+        }
+        return null;
+    }
+
+    // Replace spaces with hyphen, e.g. "KAN 1" -> "KAN-1"
+    raw = raw.replace(/^([A-Za-z0-9]+)\s+(\d+)$/, "$1-$2");
+    return raw.toUpperCase();
+}
+
+async function findOrResolveAsanaTask(config, sender, gidOrIndexOrName) {
+    if (!gidOrIndexOrName) return null;
+    let raw = String(gidOrIndexOrName).trim();
+    // Strip trailing punctuation like . or ! or quotes
+    raw = raw.replace(/^[“"']+/, "").replace(/[”"'.!?:;]+$/, "").trim();
+    if (!raw) return null;
+
+    // 1. If 1-based index into cached list
+    if (/^\d+$/.test(raw)) {
+        const idx = parseInt(raw, 10);
+        const cached = lastAsanaTasksBySender.get(sender);
+        if (cached && idx >= 1 && idx <= cached.length) {
+            return cached[idx - 1];
+        }
+        // If it's a long number (Asana GID >= 10 digits)
+        if (raw.length >= 10) {
+            return { gid: raw, name: "Task" };
+        }
+    }
+
+    // 2. Search in cached tasks by name
+    const cached = lastAsanaTasksBySender.get(sender) || [];
+    const lowerQuery = raw.toLowerCase();
+
+    let found = cached.find(t => (t.name || "").trim().toLowerCase() === lowerQuery);
+    if (!found) {
+        found = cached.find(t => (t.name || "").toLowerCase().includes(lowerQuery) || lowerQuery.includes((t.name || "").toLowerCase()));
+    }
+    if (found) return found;
+
+    // 3. If not found in cache, fetch active tasks from Asana and search
+    try {
+        const res = await getAsanaTasks(config, { maxResults: 50 });
+        if (res.tasks && res.tasks.length > 0) {
+            lastAsanaTasksBySender.set(sender, res.tasks);
+            found = res.tasks.find(t => (t.name || "").trim().toLowerCase() === lowerQuery);
+            if (!found) {
+                found = res.tasks.find(t => (t.name || "").toLowerCase().includes(lowerQuery) || lowerQuery.includes((t.name || "").toLowerCase()));
+            }
+            if (found) return found;
+        }
+    } catch (e) {
+        console.warn("[Asana Resolve Task Warning]:", e.message);
+    }
+
+    // Fallback: If it's numeric GID
+    if (/^\d{10,}$/.test(raw)) {
+        return { gid: raw, name: "Task" };
+    }
+
+    return null;
+}
+
+function resolveAsanaTaskId(sender, gidOrIndex) {
+    if (!gidOrIndex) return null;
+    let raw = String(gidOrIndex).trim().replace(/[.!?:;]+$/, "");
+    if (/^\d+$/.test(raw)) {
+        const idx = parseInt(raw, 10);
+        const cached = lastAsanaTasksBySender.get(sender);
+        if (cached && idx >= 1 && idx <= cached.length) {
+            return cached[idx - 1].gid;
+        }
+        if (raw.length >= 10) {
+            return raw;
+        }
+    }
+    const cached = lastAsanaTasksBySender.get(sender) || [];
+    const lower = raw.toLowerCase();
+    const found = cached.find(t => (t.name || "").toLowerCase().includes(lower));
+    return found ? found.gid : raw;
+}
+
+function buildAlgorithmicPriority({ jiraIssues = [], asanaTasks = [], userTodos = [], userReminders = [], host = "" }) {
+    let out = "🎯 *Prioritized Task Order:*\n\n";
+
+    const inProgress = jiraIssues.filter(i => /progress|review|dev/i.test(i.status));
+    const subtasksAndBugs = jiraIssues.filter(i => !inProgress.includes(i) && /subtask|sub-task|bug/i.test(i.issueType));
+    const docs = jiraIssues.filter(i => !inProgress.includes(i) && !subtasksAndBugs.includes(i) && /doc|document/i.test(i.summary));
+    const otherTasks = jiraIssues.filter(i => !inProgress.includes(i) && !subtasksAndBugs.includes(i) && !docs.includes(i));
+
+    let count = 1;
+    if (inProgress.length > 0) {
+        out += "🔥 *In Progress / Top Priority:*\n";
+        inProgress.forEach(i => {
+            out += `${count++}. *[${i.key}]* ${i.summary} (🟡 _${i.status}_)\n`;
+        });
+        out += "\n";
+    }
+
+    if (subtasksAndBugs.length > 0) {
+        out += "⚡ *Immediate Subtasks & Blockers:*\n";
+        subtasksAndBugs.forEach(i => {
+            out += `${count++}. *[${i.key}]* ${i.summary} (🔵 _${i.issueType}_)\n`;
+        });
+        out += "\n";
+    }
+
+    if (otherTasks.length > 0) {
+        out += "📌 *Next Up (Core Tasks):*\n";
+        otherTasks.forEach(i => {
+            out += `${count++}. *[${i.key}]* ${i.summary}\n`;
+        });
+        out += "\n";
+    }
+
+    if (docs.length > 0) {
+        out += "📝 *Documentation & Backlog:*\n";
+        docs.forEach(i => {
+            out += `${count++}. *[${i.key}]* ${i.summary}\n`;
+        });
+        out += "\n";
+    }
+
+    if (asanaTasks.length > 0) {
+        out += "🔴 *Asana Action Items:*\n";
+        asanaTasks.forEach(t => {
+            const dueStr = t.due_on ? ` (📅 Due: ${t.due_on})` : "";
+            const projStr = t.projectName ? ` [${t.projectName}]` : "";
+            out += `${count++}. *${t.name}*${dueStr}${projStr}\n`;
+        });
+        out += "\n";
+    }
+
+    if (userTodos.length > 0) {
+        out += "📋 *Personal Checklist:*\n";
+        userTodos.forEach(t => {
+            const name = typeof t === "object" ? t.name : t;
+            out += `${count++}. ${name}\n`;
+        });
+        out += "\n";
+    }
+
+    if (userReminders.length > 0) {
+        out += "⏰ *Scheduled Reminders:*\n";
+        userReminders.forEach(r => {
+            out += `${count++}. ${r.name}\n`;
+        });
+        out += "\n";
+    }
+
+    const firstItem = inProgress[0] || subtasksAndBugs[0] || asanaTasks[0] || otherTasks[0];
+    if (firstItem) {
+        if (firstItem.key) {
+            out += `💡 _Recommendation: Focus on finishing *${firstItem.key}* first! Reply "jira done ${firstItem.key}" when complete._`;
+        } else if (firstItem.name) {
+            out += `💡 _Recommendation: Focus on finishing *${firstItem.name}* first! Reply "asana done 1" when complete._`;
+        }
+    }
+
+    return out.trim();
+}
+
+async function handlePrioritizeTasks(sock, sender, userPrompt, dbUser, session) {
+    const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+    const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+    const effJira = getEffectiveJiraConfig(jConf);
+    const effAsana = getEffectiveAsanaConfig(aConf);
+
+    let jiraIssues = [];
+    if (effJira.isConfigured) {
+        try {
+            const jRes = await getJiraIssues(jConf, { maxResults: 10 });
+            jiraIssues = jRes.issues || [];
+            if (jiraIssues.length > 0) {
+                lastJiraIssuesBySender.set(sender, jiraIssues);
+            }
+        } catch (e) {
+            console.warn("[Priority] Error fetching Jira tickets:", e.message);
+        }
+    }
+
+    let asanaTasks = [];
+    if (effAsana.isConfigured) {
+        try {
+            const aRes = await getAsanaTasks(aConf, { maxResults: 10 });
+            asanaTasks = (aRes.tasks || []).filter(t => !t.completed);
+            if (asanaTasks.length > 0) {
+                lastAsanaTasksBySender.set(sender, asanaTasks);
+            }
+        } catch (e) {
+            console.warn("[Priority] Error fetching Asana tasks:", e.message);
+        }
+    }
+
+    const userTodos = dbUser 
+        ? db.getUserTodos(dbUser.id).filter(t => t.status === "pending")
+        : (loadTodos()[sender] || []);
+
+    const userReminders = dbUser
+        ? db.getUserReminders(dbUser.id).filter(r => r.status === "pending")
+        : loadReminders().filter(r => r.sender === sender && r.status === "pending");
+
+    const totalTasks = jiraIssues.length + asanaTasks.length + userTodos.length + userReminders.length;
+    if (totalTasks === 0) {
+        const emptyMsg = "🎉 *You're all caught up!*\n\nYou have no pending tasks, to-dos, Asana items, or Jira tickets right now.";
+        session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+        session.history.push({ role: "model", parts: [{ text: emptyMsg }] });
+        await sendReply(sock, sender, { text: emptyMsg });
+        return;
+    }
+
+    // Try Gemini AI for a rich, intelligent prioritization
+    if (ai) {
+        try {
+            const jiraSummary = jiraIssues.map((i, idx) => 
+                `- [${i.key}] "${i.summary}" | Status: ${i.status} | Priority: ${i.priority} | Type: ${i.issueType}`
+            ).join("\n");
+
+            const asanaSummary = asanaTasks.map((t, idx) => 
+                `- Asana #${idx + 1}: "${t.name}"${t.due_on ? ` (Due: ${t.due_on})` : ""}${t.projectName ? ` [Project: ${t.projectName}]` : ""}`
+            ).join("\n");
+
+            const todoSummary = userTodos.map(t => 
+                `- Checklist: "${typeof t === "object" ? t.name : t}"${typeof t === "object" && t.description ? ` (${t.description})` : ""}`
+            ).join("\n");
+
+            const remSummary = userReminders.map(r => 
+                `- Scheduled Reminder: "${r.name}" (${formatTimeString(r.target_timestamp || r.targetTimestamp)})`
+            ).join("\n");
+
+            const priorityPrompt = `You are Anam, an executive assistant.
+The user asked: "${userPrompt}"
+
+User's Active Tasks & Tickets:
+${jiraSummary ? `Jira Tickets (${effJira.host}):\n${jiraSummary}\n` : ""}
+${asanaSummary ? `Asana Tasks:\n${asanaSummary}\n` : ""}
+${todoSummary ? `To-Do Checklist:\n${todoSummary}\n` : ""}
+${remSummary ? `Upcoming Reminders:\n${remSummary}\n` : ""}
+
+Task: Analyze and prioritize these items across platforms into an actionable game plan for the user.
+Guidelines:
+1. Put active/in-progress items first, then blockers/dependencies/subtasks, then core Asana & Jira tasks, then documentation/backlog tasks.
+2. Group clearly with emoji headers (e.g. 🔥 *In Progress / Top Priority*, ⚡ *Immediate Next Up*, 🔴 *Asana Action Items*, 📝 *Documentation & Backlog*, etc.).
+3. Mention the ticket key [KEY], Asana task name, or checklist item.
+4. Give a 1-sentence bottom recommendation on the exact first step to take right now.
+5. Keep it punchy, friendly, and structured for WhatsApp texting.`;
+
+            const aiRes = await generateAIContent([{ role: "user", parts: [{ text: priorityPrompt }] }], undefined);
+            const prioritizedText = aiRes.text?.trim();
+            if (prioritizedText) {
+                session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+                session.history.push({ role: "model", parts: [{ text: prioritizedText }] });
+                await sendReply(sock, sender, { text: prioritizedText });
+                return;
+            }
+        } catch (err) {
+            console.warn("[Priority] AI prioritization failover to algorithmic:", err.message);
+        }
+    }
+
+    // Algorithmic Fallback (deterministic, guaranteed smart ordering)
+    const replyText = buildAlgorithmicPriority({ jiraIssues, asanaTasks, userTodos, userReminders, host: effJira.host });
+    session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+    session.history.push({ role: "model", parts: [{ text: replyText }] });
+    await sendReply(sock, sender, { text: replyText });
+}
 
 function setPendingMediaSession(sender, sessionData, sock) {
     if (pendingMediaSessions.has(sender)) {
@@ -222,6 +565,286 @@ const botTools = [
                 parameters: {
                     type: Type.OBJECT,
                     properties: {}
+                }
+            },
+            // Jira Tools
+            {
+                name: "jira_create_issue",
+                description: "Create a new issue, task, bug, or story in Atlassian Jira Cloud.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        summary: { type: Type.STRING, description: "Title/summary of the Jira issue" },
+                        description: { type: Type.STRING, description: "Detailed description of the issue" },
+                        project_key: { type: Type.STRING, description: "Jira project key e.g. PROJ, DEV, BUG (optional if default project is configured)" },
+                        issue_type: { type: Type.STRING, description: "Type of issue: Task, Bug, Story (default: Task)" }
+                    },
+                    required: ["summary"]
+                }
+            },
+            {
+                name: "jira_get_issues",
+                description: "Search or retrieve Jira tickets and issues assigned to the user or in a project.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        jql: { type: Type.STRING, description: "Optional JQL query string. Defaults to active user tickets" },
+                        max_results: { type: Type.NUMBER, description: "Maximum number of tickets to return (default: 5)" }
+                    }
+                }
+            },
+            {
+                name: "jira_transition_issue",
+                description: "Change the status or move a Jira issue (e.g. mark as Done, In Progress, Closed).",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        issue_key: { type: Type.STRING, description: "The Jira issue key, e.g. PROJ-123" },
+                        target_status: { type: Type.STRING, description: "Desired status: 'Done', 'In Progress', 'Closed', etc." }
+                    },
+                    required: ["issue_key", "target_status"]
+                }
+            },
+            {
+                name: "jira_add_comment",
+                description: "Add a comment to an existing Jira issue.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        issue_key: { type: Type.STRING, description: "The Jira issue key, e.g. PROJ-123" },
+                        comment: { type: Type.STRING, description: "The comment text to post" }
+                    },
+                    required: ["issue_key", "comment"]
+                }
+            },
+            // Google Calendar Tools
+            {
+                name: "calendar_list_events",
+                description: "List scheduled meetings and events from Google Calendar for today, tomorrow, or this week.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        time_frame: { type: Type.STRING, description: "Time period to inspect: 'today', 'tomorrow', 'this_week', or 'upcoming'" },
+                        max_results: { type: Type.NUMBER, description: "Maximum number of events to show (default: 10)" }
+                    }
+                }
+            },
+            {
+                name: "calendar_create_event",
+                description: "Schedule and create a new meeting or event on Google Calendar, with automatic Google Meet video call link generation.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        title: { type: Type.STRING, description: "Event title or meeting subject" },
+                        start_time: { type: Type.STRING, description: "Start time/date in ISO format or relative (e.g. 'tomorrow at 3pm', '2026-10-16T15:00:00')" },
+                        duration_minutes: { type: Type.NUMBER, description: "Duration in minutes (default: 30)" },
+                        description: { type: Type.STRING, description: "Optional event description or agenda" },
+                        location: { type: Type.STRING, description: "Optional location or custom link" },
+                        add_meet: { type: Type.BOOLEAN, description: "Whether to generate a Google Meet video conference link (default: true for meetings)" }
+                    },
+                    required: ["title"]
+                }
+            },
+            {
+                name: "create_instant_meet",
+                description: "Generate an instant Google Meet video call link right now for immediate joining and syncing to Google Calendar.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        topic: { type: Type.STRING, description: "Optional topic or reason for the Google Meet (default: 'Instant Google Meet')" }
+                    }
+                }
+            },
+            {
+                name: "calendar_delete_event",
+                description: "Cancel or delete an event from Google Calendar by title search or ID.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        search_title: { type: Type.STRING, description: "Title or keyword of the event to delete" },
+                        event_id: { type: Type.STRING, description: "Optional specific Google Calendar event ID" }
+                    }
+                }
+            },
+            // Asana AI Tools
+            {
+                name: "asana_get_tasks",
+                description: "List tasks from Asana (assigned to the user or in a specific project).",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        project_id: { type: Type.STRING, description: "Optional project GID or project name to filter by" },
+                        completed: { type: Type.BOOLEAN, description: "Filter by completed status: false for pending (default), true for completed" },
+                        max_results: { type: Type.NUMBER, description: "Maximum number of tasks to return (default: 10)" }
+                    }
+                }
+            },
+            {
+                name: "asana_create_task",
+                description: "Create a new task in Asana with optional notes, due date, and project.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        name: { type: Type.STRING, description: "Title/name of the Asana task" },
+                        notes: { type: Type.STRING, description: "Detailed description or notes for the task" },
+                        due_on: { type: Type.STRING, description: "Due date in YYYY-MM-DD format (e.g. 2026-10-25) or relative (e.g. tomorrow)" },
+                        project_id: { type: Type.STRING, description: "Optional project GID or name" }
+                    },
+                    required: ["name"]
+                }
+            },
+            {
+                name: "asana_complete_task",
+                description: "Mark an Asana task as completed (by task GID, name, or index number).",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        task_id: { type: Type.STRING, description: "The Asana task GID or index number (e.g. 1)" }
+                    },
+                    required: ["task_id"]
+                }
+            },
+            {
+                name: "asana_add_comment",
+                description: "Add a comment/story to an existing Asana task.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        task_id: { type: Type.STRING, description: "The Asana task GID or index number" },
+                        comment: { type: Type.STRING, description: "The comment text to post" }
+                    },
+                    required: ["task_id", "comment"]
+                }
+            },
+            {
+                name: "asana_update_task",
+                description: "Update an existing Asana task (e.g. change title, notes/description, due date, or mark completed).",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        task_id: { type: Type.STRING, description: "The Asana task index number (e.g. 1), name, or GID" },
+                        title: { type: Type.STRING, description: "New title/name for the task" },
+                        notes: { type: Type.STRING, description: "New notes or description for the task" },
+                        due_on: { type: Type.STRING, description: "New due date in YYYY-MM-DD format (e.g. 2026-10-25)" },
+                        completed: { type: Type.BOOLEAN, description: "True to mark completed, false to reopen" }
+                    },
+                    required: ["task_id"]
+                }
+            },
+            {
+                name: "asana_create_project",
+                description: "Create a new project in Asana so it appears on the user's Asana dashboard.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        name: { type: Type.STRING, description: "Name of the new Asana project" },
+                        notes: { type: Type.STRING, description: "Optional project description or goal" },
+                        color: { type: Type.STRING, description: "Optional project color (e.g. 'light-blue', 'light-green', 'light-red')" }
+                    },
+                    required: ["name"]
+                }
+            },
+            {
+                name: "email_draft",
+                description: "Draft an email to a recipient with a subject line and professional message body, and save it as a draft for user review.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        to: { type: Type.STRING, description: "Recipient email address (e.g. client@example.com)" },
+                        subject: { type: Type.STRING, description: "Subject of the email" },
+                        body: { type: Type.STRING, description: "Body text / message content of the email" }
+                    },
+                    required: ["to", "subject", "body"]
+                }
+            },
+            {
+                name: "email_send",
+                description: "Send an email immediately (or send an existing draft by its ID) via Gmail.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        draft_id: { type: Type.INTEGER, description: "Optional ID number of existing draft to send (e.g. 1)" },
+                        to: { type: Type.STRING, description: "Recipient email address if sending directly" },
+                        subject: { type: Type.STRING, description: "Subject of the email if sending directly" },
+                        body: { type: Type.STRING, description: "Body text of the email if sending directly" }
+                    }
+                }
+            },
+            {
+                name: "email_list_drafts",
+                description: "List all saved pending email drafts.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {}
+                }
+            },
+            // Google Drive Tools
+            {
+                name: "drive_list_files",
+                description: "List recent files and folders stored in Google Drive.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        folder_id: { type: Type.STRING, description: "Optional folder ID to inspect files within" },
+                        max_results: { type: Type.NUMBER, description: "Maximum number of files to return (default: 10)" }
+                    }
+                }
+            },
+            {
+                name: "drive_search_files",
+                description: "Search for files, PDFs, spreadsheets, documents, or presentations on Google Drive by name or keyword.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        query: { type: Type.STRING, description: "Search term, document name, or topic to search on Google Drive" },
+                        max_results: { type: Type.NUMBER, description: "Maximum number of results to return (default: 10)" }
+                    },
+                    required: ["query"]
+                }
+            },
+            {
+                name: "drive_create_folder",
+                description: "Create a new folder in Google Drive.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        folder_name: { type: Type.STRING, description: "Name of the new folder to create" }
+                    },
+                    required: ["folder_name"]
+                }
+            },
+            {
+                name: "drive_share_file",
+                description: "Get a shareable link for a file or share it on Google Drive.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        file_id: { type: Type.STRING, description: "ID of the Google Drive file" },
+                        search_name: { type: Type.STRING, description: "Name or keyword of the file to share if ID is unknown" }
+                    }
+                }
+            },
+            {
+                name: "drive_delete_file",
+                description: "Delete or move a Google Drive file to trash.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        file_id: { type: Type.STRING, description: "ID of the file to delete" },
+                        search_name: { type: Type.STRING, description: "Name of the file to delete if ID is unknown" }
+                    }
+                }
+            },
+            {
+                name: "drive_upload_text",
+                description: "Save, create, or upload a text note or document into Google Drive.",
+                parameters: {
+                    type: Type.OBJECT,
+                    properties: {
+                        file_name: { type: Type.STRING, description: "Name of the file (e.g. notes.txt or meeting_notes.txt)" },
+                        content: { type: Type.STRING, description: "Text content to save into the file" }
+                    },
+                    required: ["file_name", "content"]
                 }
             }
         ]
@@ -314,6 +937,11 @@ function parseTaskCommand(text) {
     if (!text) return null;
     let raw = text.trim();
 
+    // Do NOT intercept Asana, Jira, Project, or Email commands
+    if (/\b(?:asana|jira|project|email|mail|draft)\b/i.test(raw)) {
+        return null;
+    }
+
     // Do not confuse with timed reminders or queries
     const hasTimeKeyword = /\b(?:at\s+\d|in\s+\d+\s*(?:sec|min|hour)|tomorrow\s+at)\b/i.test(raw);
     if (hasTimeKeyword && /\b(?:remind|reminder)\b/i.test(raw)) {
@@ -360,10 +988,29 @@ function parseFreeFormReminder(text) {
     if (!text) return null;
     let raw = text.trim();
 
+    // Direct platform commands, email drafting/sending, or queries should NEVER be parsed as reminders
+    if (/^\s*(?:!|jira\b|calendar\b|asana\b|email\b|gmail\b|mail\b|draft\b|integrations?\b)/i.test(raw)) {
+        return null;
+    }
+
+    // Any message mentioning email/draft/send along with an email address should NEVER be a reminder
+    if (/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(raw) && /\b(?:draft|send|email|mail|write|compose)\b/i.test(raw)) {
+        return null;
+    }
+
     const isReminderKeyword = /\b(remind|reminder)\b/i.test(raw);
     const hasRelativeTime = /\bin\s+\d+\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b/i.test(raw);
     const hasTomorrow = /\btomorrow\b/i.test(raw);
-    const hasClockTime = /\b([0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?)\b/i.test(raw);
+
+    // Precise Clock Time detection:
+    // Requires: 'at <time>', '<time> am/pm', 'HH:MM', or tomorrow with time, or reminder keyword with hour
+    const hasExplicitAtTime = /\bat\s+[0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?\b/i.test(raw);
+    const hasAmPm = /\b[0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)\b/i.test(raw);
+    const hasColonTime = /\b[0-2]?[0-9]:[0-5][0-9]\b/i.test(raw);
+    const hasTomorrowTime = /\btomorrow(?:\s+at)?\s+[0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?\b/i.test(raw);
+    const hasReminderHour = isReminderKeyword && /\b(?:at\s+|for\s+)?([0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?)\b/i.test(raw);
+
+    const hasClockTime = hasExplicitAtTime || hasAmPm || hasColonTime || hasTomorrowTime || hasReminderHour;
 
     if (!isReminderKeyword && !hasRelativeTime && !hasTomorrow && !hasClockTime) {
         return null;
@@ -403,11 +1050,32 @@ function parseFreeFormReminder(text) {
         }
     }
 
-    // 3. Clock Time: "8:35", "at 8:35", "8pm", "20:00", "9:19 pm"
-    if (!targetTimestamp) {
-        const clockMatch = workText.match(/(?:\bat\s+)?([0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?)\b/i);
-        if (clockMatch) {
-            const parsed = parseClockTime(clockMatch[1]);
+    // 3. Clock Time: requires explicit 'at', 'am/pm', ':', or reminder keyword
+    if (!targetTimestamp && hasClockTime) {
+        let clockMatchStr = null;
+        let timeStr = null;
+
+        const atMatch = workText.match(/\bat\s+([0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?)\b/i);
+        const ampmMatch = workText.match(/\b([0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm))\b/i);
+        const colonMatch = workText.match(/\b([0-2]?[0-9]:[0-5][0-9])\b/i);
+        const reminderHourMatch = isReminderKeyword ? workText.match(/\b(?:at\s+|for\s+)?([0-2]?[0-9])\b/i) : null;
+
+        if (atMatch) {
+            clockMatchStr = atMatch[0];
+            timeStr = atMatch[1];
+        } else if (ampmMatch) {
+            clockMatchStr = ampmMatch[0];
+            timeStr = ampmMatch[1];
+        } else if (colonMatch) {
+            clockMatchStr = colonMatch[0];
+            timeStr = colonMatch[1];
+        } else if (reminderHourMatch) {
+            clockMatchStr = reminderHourMatch[0];
+            timeStr = reminderHourMatch[1];
+        }
+
+        if (clockMatchStr && timeStr) {
+            const parsed = parseClockTime(timeStr);
             if (parsed) {
                 const now = new Date();
                 const target = new Date();
@@ -429,7 +1097,7 @@ function parseFreeFormReminder(text) {
                     targetTimestamp = target.getTime();
                     isTomorrow = false;
                 }
-                workText = workText.replace(clockMatch[0], "").trim();
+                workText = workText.replace(clockMatchStr, "").trim();
             }
         }
     }
@@ -789,7 +1457,7 @@ function updateReminderMessage(reminderId, messageText) {
     }
 }
 
-function createAndSaveReminder(sock, sender, parsedCmd, dbUserId = null) {
+async function createAndSaveReminder(sock, sender, parsedCmd, dbUserId = null) {
     const { targetTimestamp, isTomorrow, name, description, mediaPath, mediaType } = parsedCmd;
 
     const displayName = (name && name !== "task" && name !== "your file" && name !== "your task") 
@@ -804,7 +1472,7 @@ function createAndSaveReminder(sock, sender, parsedCmd, dbUserId = null) {
         `Done. You'll hear from me ${when}: ${displayName}`
     ];
 
-    const confirmMsg = templates[Math.floor(Math.random() * templates.length)];
+    let confirmMsg = templates[Math.floor(Math.random() * templates.length)];
 
     let reminderId = "rem_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
 
@@ -851,6 +1519,54 @@ function createAndSaveReminder(sock, sender, parsedCmd, dbUserId = null) {
     generateReminderMessage(reminderId, displayName, description || "").catch(err => {
         console.error("[Reminder Message BG Error]:", err.message);
     });
+
+    // Auto-sync with Google Calendar if configured
+    let calSynced = false;
+    let calMeetLink = null;
+    try {
+        let calUserId = dbUserId;
+        if (!calUserId) {
+            const matchedUser = db.getUserByWhatsAppJid(sender);
+            if (matchedUser) calUserId = matchedUser.id;
+        }
+
+        const calConfig = calUserId ? db.getUserIntegration(calUserId, "google_calendar") : null;
+        const effCal = getEffectiveCalendarConfig(calConfig);
+        if (effCal.isConfigured) {
+            const eventStart = new Date(targetTimestamp);
+            const eventEnd = new Date(targetTimestamp + 30 * 60 * 1000);
+            const evDesc = description 
+                ? `${description}\n\n[Created via Anam AI WhatsApp Bot]`
+                : `Reminder created via Anam AI WhatsApp Bot`;
+
+            const isMeeting = /\b(meet|meeting|call|gmeet|g-meet|sync|discussion|1:1|interview)\b/i.test(displayName + " " + (description || ""));
+
+            const calEvent = await createCalendarEvent(calConfig, {
+                summary: `⏰ ${displayName}`,
+                description: evDesc,
+                startDateTime: eventStart.toISOString(),
+                endDateTime: eventEnd.toISOString(),
+                durationMinutes: 30,
+                addMeet: isMeeting
+            });
+            if (calEvent && calEvent.id) {
+                calSynced = true;
+                if (calEvent.meetLink) {
+                    calMeetLink = calEvent.meetLink;
+                }
+                console.log(`[Google Calendar] Auto-synced reminder "${displayName}" to Google Calendar (ID: ${calEvent.id})`);
+            }
+        }
+    } catch (calErr) {
+        console.warn(`[Google Calendar Auto-Sync Notice]:`, calErr.message);
+    }
+
+    if (calSynced) {
+        confirmMsg += `\n📅 *Synced with Google Calendar!*`;
+        if (calMeetLink) {
+            confirmMsg += `\n💻 *Google Meet:* ${calMeetLink}`;
+        }
+    }
 
     return confirmMsg;
 }
@@ -1088,11 +1804,12 @@ async function startBot() {
 
         const imageMsg = m?.imageMessage;
         const videoMsg = m?.videoMessage;
+        const documentMsg = m?.documentMessage;
         const rawText = (m?.conversation || m?.extendedTextMessage?.text || "").trim();
-        const caption = ((imageMsg || videoMsg)?.caption || "").trim();
+        const caption = ((imageMsg || videoMsg || documentMsg)?.caption || documentMsg?.fileName || "").trim();
         const fullContent = rawText || caption;
 
-        if (!fullContent && !imageMsg && !videoMsg) return;
+        if (!fullContent && !imageMsg && !videoMsg && !documentMsg) return;
 
         const botPrefixes = ["⏰", "🚨", "📋", "🤖", "✅", "👋", "🧹", "📝", "🎉", "❌", "⚠️", "pong!"];
         if (botPrefixes.some(prefix => fullContent.startsWith(prefix))) {
@@ -1229,11 +1946,12 @@ You can reconnect anytime by sending a fresh token from your dashboard.`;
         const session = getSession(sender);
         session.userId = dbUser.id;
 
-        // Check for direct commands: reminders, tasks, todos, media, or wake words
+        // Check for direct commands: reminders, tasks, todos, media, integrations, or wake words
         const isDirectReminder = Boolean(parseFreeFormReminder(fullContent));
         const isAddTask = Boolean(parseTaskCommand(fullContent));
         const isShowTasks = /^\s*(?:show\s+(?:my\s+)?tasks|my\s+tasks|tasks|todos|my\s+todo\s+list)\s*$/i.test(fullContent);
         const isDoneTask = /^\s*(?:done|complete|check\s+off)\s+(\d+)\s*$/i.test(fullContent);
+        const isIntegrationCmd = /^\s*(?:hey\s+anam[,:\s]*)?(?:!integrations?|integrations?|jira\b|calendar\b|asana\b|drive\b|google\s+drive\b|my\s+tickets|my\s+schedule|my\s+meetings|my\s+asana|my\s+drive|my\s+files)/i.test(fullContent);
 
         if (isGroup) {
             // Group Chat Rule: MUST start with "Hey Anam" OR be an active response to a pending prompt
@@ -1241,8 +1959,8 @@ You can reconnect anytime by sending a fresh token from your dashboard.`;
                 return;
             }
         } else {
-            // Direct/Private Chat Rule: Activate session on wake word, direct reminder, direct tasks, media, or self-chat
-            if (isWakeWord || isDirectReminder || isAddTask || isShowTasks || isDoneTask || imageMsg || videoMsg || isSelfChat) {
+            // Direct/Private Chat Rule: Activate session on wake word, direct reminder, direct tasks, media, integrations, or self-chat
+            if (isWakeWord || isDirectReminder || isAddTask || isShowTasks || isDoneTask || isIntegrationCmd || imageMsg || videoMsg || documentMsg || isSelfChat) {
                 session.isActive = true;
             } else if (!session.isActive && !isPendingResponse) {
                 return;
@@ -1308,10 +2026,11 @@ _Type *"bye"* or *"exit"* when done._`;
             return;
         }
 
-        // 1. Check for Media Message (Image or Video)
-        if (imageMsg || videoMsg) {
+        // 1. Check for Media Message (Image, Video, or Document)
+        if (imageMsg || videoMsg || documentMsg) {
             const isImage = !!imageMsg;
-            const mediaType = isImage ? "image" : "video";
+            const isDoc = !!documentMsg;
+            const mediaType = isImage ? "image" : (isDoc ? "document" : "video");
 
             // Download Media Buffer
             let buffer;
@@ -1322,15 +2041,80 @@ _Type *"bye"* or *"exit"* when done._`;
                 return;
             }
 
-            // Max file size limit check (16 MB)
-            const MAX_SIZE = 16 * 1024 * 1024;
+            // Max file size limit check (25 MB for Google Drive)
+            const MAX_SIZE = 25 * 1024 * 1024;
             if (buffer.length > MAX_SIZE) {
-                await sendReply(sock, sender, { text: "This file is too big to send back. Please send a smaller one." });
+                await sendReply(sock, sender, { text: "This file is too large (over 25 MB). Please send a smaller file." });
                 return;
             }
 
-            // Save file persistently to disk
-            const ext = isImage ? "jpg" : "mp4";
+            // Check if user requested to upload to Google Drive
+            const isDriveUpload = /(?:save\s+(?:it\s+)?to\s+drive|upload\s+(?:it\s+)?to\s+drive|to\s+drive|drive\s+upload|\bdrive\b|google\s+drive)/i.test(cleanCaption || userPrompt);
+            if (isDriveUpload) {
+                const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                const effDrive = getEffectiveDriveConfig(dConf);
+
+                if (!effDrive.isConfigured) {
+                    await sendReply(sock, sender, {
+                        text: `⚠️ *Google Drive is not connected yet.*\n\nPlease connect your Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`
+                    });
+                    return;
+                }
+
+                try {
+                    const ext = isImage ? "jpg" : (isDoc ? (documentMsg?.fileName?.split(".").pop() || "pdf") : "mp4");
+
+                    // Check if caption asked to create or use a specific folder, e.g. "Create a drive folder Anam upload this media" or "in folder Anam"
+                    let folderToUse = null;
+                    const folderMatch = (cleanCaption || "").match(/(?:(?:create\s+(?:a\s+)?drive\s+folder|create\s+folder|save\s+(?:to|in)\s+folder|in\s+folder|folder)\s+([a-zA-Z0-9_\-]+))/i);
+                    const requestedFolderName = folderMatch ? folderMatch[1].trim() : null;
+
+                    if (requestedFolderName && !/^(?:a|the|drive|this|my|to|it)$/i.test(requestedFolderName)) {
+                        try {
+                            console.log(`[GoogleDrive] User requested folder: "${requestedFolderName}". Creating or ensuring folder...`);
+                            const newFolder = await createDriveFolder(dConf, { folderName: requestedFolderName });
+                            if (newFolder && newFolder.id) {
+                                folderToUse = newFolder.id;
+                            }
+                        } catch (fErr) {
+                            console.warn("[GoogleDrive] Could not create requested subfolder, uploading to root/shared folder instead:", fErr.message);
+                        }
+                    }
+
+                    // Compute clean, descriptive file name
+                    let fileName = documentMsg?.fileName;
+                    if (!fileName) {
+                        const isInstructionOnly = /^(?:save\s+(?:it\s+)?to\s+drive|upload\s+(?:it\s+)?to\s+drive|to\s+drive|drive\s+upload|create\s+a?\s*drive\s+folder.*)$/i.test(cleanCaption || "");
+                        if (isInstructionOnly || !cleanCaption) {
+                            const dateStr = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+                            fileName = `WhatsApp_${isImage ? "Photo" : (isDoc ? "Doc" : "Video")}_${dateStr}.${ext}`;
+                        } else {
+                            const baseClean = cleanCaption.replace(/[^a-zA-Z0-9_\-\s]/g, "").trim().replace(/\s+/g, "_");
+                            fileName = `${baseClean.substring(0, 35)}.${ext}`;
+                        }
+                    }
+                    const mimeType = documentMsg?.mimetype || (isImage ? "image/jpeg" : (isDoc ? "application/pdf" : "video/mp4"));
+
+                    const uploaded = await uploadDriveFile(dConf, {
+                        fileName,
+                        mimeType,
+                        buffer,
+                        folderId: folderToUse
+                    });
+
+                    const replyText = formatUploadedFileForWhatsApp(uploaded);
+                    session.history.push({ role: "model", parts: [{ text: replyText }] });
+                    await sendReply(sock, sender, { text: replyText });
+                    return;
+                } catch (uploadErr) {
+                    const formattedErr = formatDriveApiError(uploadErr, effDrive);
+                    await sendReply(sock, sender, { text: `❌ Could not upload file to Google Drive:\n\n${formattedErr}` });
+                    return;
+                }
+            }
+
+            // Save file persistently to disk for reminders
+            const ext = isImage ? "jpg" : (isDoc ? (documentMsg?.fileName?.split(".").pop() || "pdf") : "mp4");
             const mediaId = "media_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
             const mediaPath = path.join(MEDIA_DIR, `${mediaId}.${ext}`);
             fs.writeFileSync(mediaPath, buffer);
@@ -1341,7 +2125,7 @@ _Type *"bye"* or *"exit"* when done._`;
                 if (parsedCmd && parsedCmd.targetTimestamp) {
                     parsedCmd.mediaPath = mediaPath;
                     parsedCmd.mediaType = mediaType;
-                    const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
+                    const confirmMsg = await createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
                     await sendReply(sock, sender, { text: confirmMsg });
                     return;
                 } else {
@@ -1472,6 +2256,1153 @@ _Type *"bye"* or *"exit"* when done._`;
             return;
         }
 
+        // ---------------- DIRECT PLATFORM INTEGRATION COMMANDS ----------------
+
+        // 1. !integrations / integrations
+        if (/^\s*(?:!integrations?|integrations?)\s*$/i.test(userPrompt)) {
+            const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+            const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effJira = getEffectiveJiraConfig(jConf);
+            const effCal = getEffectiveCalendarConfig(cConf);
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            const intMsg = `🔌 *Connected Platforms & Integrations*\n\n` +
+                `• *Jira Cloud*: ${effJira.isConfigured ? `🟢 Connected (${effJira.host})` : `⚪ Not Connected`}\n` +
+                `• *Google Calendar*: ${effCal.isConfigured ? `🟢 Connected (${effCal.calendarId})` : `⚪ Not Connected`}\n` +
+                `• *Asana AI*: ${effAsana.isConfigured ? `🟢 Connected${effAsana.userName ? ` (${effAsana.userName})` : ""}${effAsana.defaultProjectName ? ` [${effAsana.defaultProjectName}]` : ""}` : `⚪ Not Connected`}\n` +
+                `• *WhatsApp Bot*: 🟢 Connected & Active\n` +
+                `• *Web Dashboard*: 🌐 http://localhost:3000\n\n` +
+                `${!effJira.isConfigured || !effCal.isConfigured || !effAsana.isConfigured
+                    ? `_To connect Jira, Calendar, or Asana, visit your dashboard at http://localhost:3000 -> Integrations tab._`
+                    : `_Everything is connected! You can create tasks in Jira/Asana, manage schedules, and track to-dos directly here._`}`;
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: intMsg }] });
+            await sendReply(sock, sender, { text: intMsg });
+            return;
+        }
+
+        // ---------------- TASK PRIORITIZATION COMMAND ----------------
+        // e.g. "prioritize tasks", "Hey Anam priorities the tasks", "what should I prioritize", "rank the tasks"
+        const prioritizeRegex = /^\s*(?:hey\s+anam[,:\s]*)?(?:priorit[a-z]*|rank)\s+(?:the\s+|my\s+)?(?:tasks?|todos?|tickets?|checklist|issues?)?\b/i;
+        const whatToPrioritizeRegex = /^\s*(?:hey\s+anam[,:\s]*)?what\s+(?:tasks?\s+)?should\s+i\s+(?:prioritize|do\s+first|focus\s+on)\b/i;
+
+        if (prioritizeRegex.test(userPrompt) || whatToPrioritizeRegex.test(userPrompt)) {
+            await handlePrioritizeTasks(sock, sender, userPrompt, dbUser, session);
+            return;
+        }
+
+        // ---------------- DIRECT JIRA COMMANDS ----------------
+
+        // 2a. Direct Jira List: "jira list", "my tickets", "!jira", "jira tickets", "jira issues"
+        const jiraListRegex = /^\s*(?:!jira|jira\s+(?:list|tickets|issues)|my\s+(?:jira\s+)?tickets)\s*$/i;
+        if (jiraListRegex.test(userPrompt)) {
+            const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+            const effJira = getEffectiveJiraConfig(jConf);
+
+            let resText = "";
+            if (!effJira.isConfigured) {
+                resText = `⚠️ *Jira is not connected yet.*\n\nPlease add your Jira domain, email, and API token in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                try {
+                    const issuesRes = await getJiraIssues(jConf, { maxResults: 5 });
+                    if (issuesRes.issues) {
+                        lastJiraIssuesBySender.set(sender, issuesRes.issues);
+                    }
+                    resText = formatIssuesForWhatsApp(issuesRes);
+                } catch (err) {
+                    resText = `❌ Error retrieving Jira issues: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2b. Direct Jira Close/Done: "jira close KAN-1", "jira done KAN-1", "jira done KAN 1", "jira done 1"
+        const jiraDoneRegex = /^\s*jira\s+(?:done|close|finish)\s+([A-Za-z0-9]+(?:[\s\-]\d+)?|\d+)\s*$/i;
+        const jiraDoneMatch = userPrompt.match(jiraDoneRegex);
+        if (jiraDoneMatch) {
+            const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+            const effJira = getEffectiveJiraConfig(jConf);
+
+            let resText = "";
+            if (!effJira.isConfigured) {
+                resText = `⚠️ *Jira is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                const rawTarget = jiraDoneMatch[1];
+                const issueKey = resolveJiraIssueKey(sender, rawTarget, effJira.defaultProject);
+
+                if (!issueKey) {
+                    resText = `⚠️ Could not find Jira ticket '${rawTarget}'. Please specify a valid key (e.g. "jira done KAN-1" or "jira done 1").`;
+                } else {
+                    try {
+                        const transRes = await transitionJiraIssue(jConf, { issueKey, transitionName: "Done" });
+                        resText = formatTransitionForWhatsApp(transRes);
+                    } catch (err) {
+                        resText = `❌ Could not close ticket ${issueKey}: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2c. Direct Jira Comment: "jira comment KAN-1 fix applied", "jira comment KAN 1 update"
+        const jiraCommentRegex = /^\s*jira\s+comment\s+([A-Za-z0-9]+(?:[\s\-]\d+)?|\d+)\s+(.+)$/i;
+        const jiraCommentMatch = userPrompt.match(jiraCommentRegex);
+        if (jiraCommentMatch) {
+            const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+            const effJira = getEffectiveJiraConfig(jConf);
+
+            let resText = "";
+            if (!effJira.isConfigured) {
+                resText = `⚠️ *Jira is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                const rawTarget = jiraCommentMatch[1];
+                const commentText = jiraCommentMatch[2].trim();
+                const issueKey = resolveJiraIssueKey(sender, rawTarget, effJira.defaultProject);
+
+                if (!issueKey) {
+                    resText = `⚠️ Could not find Jira ticket '${rawTarget}'. Please specify e.g. "jira comment KAN-1 note".`;
+                } else {
+                    try {
+                        await addJiraComment(jConf, { issueKey, comment: commentText });
+                        resText = `💬 Comment added to Jira ticket *${issueKey}*!`;
+                    } catch (err) {
+                        resText = `❌ Could not add Jira comment: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2d. Direct Jira Create: "jira create Fix login button" or "jira add Task summary"
+        const jiraCreateRegex = /^\s*jira\s+(?:create|add|new)\s+(.+)$/i;
+        const jiraCreateMatch = userPrompt.match(jiraCreateRegex);
+        if (jiraCreateMatch) {
+            const rawIssueSummary = jiraCreateMatch[1].trim();
+            const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+            const effJira = getEffectiveJiraConfig(jConf);
+
+            let resText = "";
+            if (!effJira.isConfigured) {
+                resText = `⚠️ *Jira is not connected yet.* Connect your account in the web dashboard at http://localhost:3000 -> Integrations tab!`;
+            } else {
+                try {
+                    const created = await createJiraIssue(jConf, {
+                        summary: rawIssueSummary,
+                        projectKey: effJira.defaultProject || ""
+                    });
+                    resText = formatCreatedIssueForWhatsApp(created);
+                } catch (err) {
+                    resText = `❌ Could not create Jira issue: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2e. Direct Jira Ticket View: "jira KAN 1", "jira KAN-1", "jira 1", "jira view KAN-1", "jira ticket KAN-1"
+        const jiraViewRegex = /^\s*(?:!jira\s+|jira\s+(?:view\s+|get\s+|show\s+|ticket\s+|details\s+)?|view\s+jira\s+|ticket\s+)([A-Za-z0-9]+(?:[\s\-]\d+)?|\d+)\s*$/i;
+        const bareIssueRegex = /^\s*([A-Za-z]+-\d+)\s*$/i;
+
+        const isJiraView = jiraViewRegex.test(userPrompt) && !/^\s*jira\s+(?:help|list|tickets?|issues?|create|add|new|done|close|finish|comment)\b/i.test(userPrompt);
+        const isBareKey = bareIssueRegex.test(userPrompt);
+
+        if (isJiraView || isBareKey) {
+            const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+            const effJira = getEffectiveJiraConfig(jConf);
+
+            let resText = "";
+            if (!effJira.isConfigured) {
+                resText = `⚠️ *Jira is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                const rawTarget = isBareKey ? userPrompt.match(bareIssueRegex)[1] : userPrompt.match(jiraViewRegex)[1];
+                const issueKey = resolveJiraIssueKey(sender, rawTarget, effJira.defaultProject);
+
+                if (!issueKey) {
+                    resText = `⚠️ Could not identify Jira ticket '${rawTarget}'. Try "jira list" to view available tickets.`;
+                } else {
+                    try {
+                        const issue = await getJiraIssue(jConf, issueKey);
+                        resText = formatSingleIssueForWhatsApp(issue);
+                    } catch (err) {
+                        resText = `❌ Could not load Jira ticket ${issueKey}: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2f. Direct Jira Help: "jira help" or bare "jira"
+        if (/^\s*(?:!jira|jira(?:\s+help)?)\s*$/i.test(userPrompt)) {
+            const helpText = `📋 *Jira Commands Guide:*\n\n` +
+                `• *jira list* - View recent tickets\n` +
+                `• *jira <KEY>* (e.g. _jira KAN-1_ or _jira 1_) - View ticket details\n` +
+                `• *jira add <summary>* - Create a new task\n` +
+                `• *jira done <KEY>* (e.g. _jira done KAN-1_) - Mark ticket as Done\n` +
+                `• *jira comment <KEY> <note>* - Add a comment\n` +
+                `• *prioritize tasks* - Get smart, prioritized plan of all your tasks`;
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: helpText }] });
+            await sendReply(sock, sender, { text: helpText });
+            return;
+        }
+
+        // ---------------- DIRECT ASANA COMMANDS ----------------
+
+        // 2g-proj. Direct Asana Create Project:
+        // "asana add project <name>", "asana create project <name>", "add a new project in asana: <name>", "create project <name> in asana"
+        const asanaCreateProjRegex = /^\s*(?:asana\s+(?:create|add|new)\s+project\s+|add\s+(?:a\s+)?(?:new\s+)?project\s+in\s+asana\s*[:\-]?\s*|create\s+(?:a\s+)?(?:new\s+)?project\s+in\s+asana\s*[:\-]?\s*)(.+)$/i;
+        const asanaCreateProjMatch = userPrompt.match(asanaCreateProjRegex);
+        const asanaCreateProjPromptOnlyRegex = /^\s*(?:asana\s+(?:create|add|new)\s+project|add\s+(?:a\s+)?(?:new\s+)?project\s+in\s+asana|create\s+(?:a\s+)?project\s+in\s+asana)\s*$/i;
+
+        if (asanaCreateProjMatch || asanaCreateProjPromptOnlyRegex.test(userPrompt)) {
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.* Please add your Asana Personal Access Token in your web dashboard at http://localhost:3000 -> Integrations tab!`;
+            } else if (asanaCreateProjPromptOnlyRegex.test(userPrompt)) {
+                resText = `📁 *Create New Asana Project:*\n\n` +
+                          `Please tell me the name of the project you want to create! For example:\n` +
+                          `• *asana add project Marketing Campaign*\n` +
+                          `• *asana create project Website Redesign*`;
+            } else {
+                const projectName = asanaCreateProjMatch[1].trim().replace(/[.!?:;]+$/, "");
+                try {
+                    const project = await createAsanaProject(aConf, { name: projectName });
+                    resText = formatCreatedAsanaProjectForWhatsApp(project);
+                } catch (err) {
+                    resText = `❌ Could not create Asana project: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2g. Direct Asana List: "asana list", "asana tasks", "!asana", "my asana tasks"
+        const asanaListRegex = /^\s*(?:!asana|asana\s+(?:list|tasks?)|my\s+asana(?:\s+tasks?)?)\s*$/i;
+        if (asanaListRegex.test(userPrompt)) {
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.*\n\nPlease add your Personal Access Token in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                try {
+                    const tasksRes = await getAsanaTasks(aConf, { maxResults: 15 });
+                    if (tasksRes.tasks) {
+                        lastAsanaTasksBySender.set(sender, tasksRes.tasks);
+                    }
+                    resText = formatAsanaTasksForWhatsApp(tasksRes);
+                } catch (err) {
+                    resText = `❌ Error retrieving Asana tasks: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2h. Direct Asana Complete/Done: "asana done 1", "asana done Schedule dentist appointment.", "asana complete 2"
+        const asanaDoneRegex = /^\s*asana\s+(?:done|close|finish|complete)\s+(.+)$/i;
+        const asanaDoneMatch = userPrompt.match(asanaDoneRegex);
+        if (asanaDoneMatch) {
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                const rawTarget = asanaDoneMatch[1].trim();
+                const task = await findOrResolveAsanaTask(aConf, sender, rawTarget);
+
+                if (!task || !task.gid) {
+                    resText = `⚠️ Could not find Asana task '${rawTarget}'. Try "asana list" first to see item numbers or full titles.`;
+                } else {
+                    try {
+                        const doneRes = await completeAsanaTask(aConf, task.gid);
+                        doneRes.name = task.name || doneRes.name;
+                        resText = formatCompletedAsanaTaskForWhatsApp(doneRes);
+                    } catch (err) {
+                        resText = `❌ Could not complete Asana task: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2h-upd. Direct Asana Update:
+        // "asana update 1 rename Buy organic vegetables", "asana rename 1 Pay electricity", "asana update 1 due 2026-10-25"
+        const asanaUpdateRegex = /^\s*asana\s+(?:update\s+(\S+)\s+(rename|title|due|date|notes?|desc(?:ription)?|done|complete)\s+(.+)|(?:rename|due|notes?)\s+(\S+)\s+(.+))\s*$/i;
+        const asanaUpdateMatch = userPrompt.match(asanaUpdateRegex);
+        if (asanaUpdateMatch) {
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                let rawTarget = "";
+                let action = "";
+                let val = "";
+
+                if (asanaUpdateMatch[1]) {
+                    rawTarget = asanaUpdateMatch[1];
+                    action = asanaUpdateMatch[2].toLowerCase();
+                    val = asanaUpdateMatch[3].trim();
+                } else {
+                    const fullCmd = userPrompt.trim();
+                    if (/^\s*asana\s+rename\s+/i.test(fullCmd)) {
+                        action = "rename";
+                    } else if (/^\s*asana\s+due\s+/i.test(fullCmd)) {
+                        action = "due";
+                    } else {
+                        action = "notes";
+                    }
+                    rawTarget = asanaUpdateMatch[4];
+                    val = asanaUpdateMatch[5].trim();
+                }
+
+                const task = await findOrResolveAsanaTask(aConf, sender, rawTarget);
+                if (!task || !task.gid) {
+                    resText = `⚠️ Could not find Asana task '${rawTarget}'. Try "asana list" to view task numbers.`;
+                } else {
+                    try {
+                        const updates = {};
+                        let changeSummary = "";
+                        if (action === "rename" || action === "title") {
+                            updates.name = val;
+                            changeSummary = `Title changed to "${val}"`;
+                        } else if (action === "due" || action === "date") {
+                            let dueDateStr = val;
+                            if (val.toLowerCase() === "tomorrow") {
+                                const tom = new Date();
+                                tom.setDate(tom.getDate() + 1);
+                                dueDateStr = tom.toISOString().split("T")[0];
+                            } else if (val.toLowerCase() === "today") {
+                                dueDateStr = new Date().toISOString().split("T")[0];
+                            }
+                            updates.dueOn = dueDateStr;
+                            changeSummary = `Due date set to ${dueDateStr}`;
+                        } else if (action === "done" || action === "complete") {
+                            updates.completed = true;
+                            changeSummary = `Marked as completed`;
+                        } else {
+                            updates.notes = val;
+                            changeSummary = `Notes updated`;
+                        }
+
+                        const updated = await updateAsanaTask(aConf, task.gid, updates);
+                        resText = formatUpdatedAsanaTaskForWhatsApp(updated, changeSummary);
+                    } catch (err) {
+                        resText = `❌ Could not update Asana task: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2i. Direct Asana Add: "asana add Buy groceries", "asana create Prepare slides"
+        const asanaCreateRegex = /^\s*asana\s+(?:create|add|new)\s+(?!project\b)(.+)$/i;
+        const asanaCreateMatch = userPrompt.match(asanaCreateRegex);
+        if (asanaCreateMatch) {
+            const rawTaskName = asanaCreateMatch[1].trim();
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.* Connect your account in the web dashboard at http://localhost:3000 -> Integrations tab!`;
+            } else {
+                try {
+                    const created = await createAsanaTask(aConf, {
+                        name: rawTaskName,
+                        projectId: effAsana.defaultProject || undefined
+                    });
+                    resText = formatCreatedAsanaTaskForWhatsApp(created);
+                } catch (err) {
+                    resText = `❌ Could not create Asana task: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2j. Direct Asana Comment: "asana comment 1 Finished draft", "asana comment <gid> Update"
+        const asanaCommentRegex = /^\s*asana\s+comment\s+(\S+)\s+(.+)$/i;
+        const asanaCommentMatch = userPrompt.match(asanaCommentRegex);
+        if (asanaCommentMatch) {
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                const rawTarget = asanaCommentMatch[1].trim();
+                const commentText = asanaCommentMatch[2].trim();
+                const task = await findOrResolveAsanaTask(aConf, sender, rawTarget);
+
+                if (!task || !task.gid) {
+                    resText = `⚠️ Could not find Asana task '${rawTarget}'. Try "asana list" to view recent tasks.`;
+                } else {
+                    try {
+                        await addAsanaComment(aConf, { taskGid: task.gid, comment: commentText });
+                        resText = `💬 Comment added to Asana task *${task.name || ""}*!`;
+                    } catch (err) {
+                        resText = `❌ Could not add Asana comment: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2k. Direct Asana Task View: "asana 1", "asana view 1", "asana <gid>"
+        const asanaViewRegex = /^\s*(?:!asana\s+|asana\s+(?:view\s+|get\s+|show\s+|task\s+|details\s+)?|view\s+asana\s+)(\d+|[A-Za-z0-9_]{10,})\s*$/i;
+        const isAsanaView = asanaViewRegex.test(userPrompt) && !/^\s*asana\s+(?:help|list|tasks?|create|add|new|done|close|finish|complete|update|rename|due|notes?|comment|project)\b/i.test(userPrompt);
+
+        if (isAsanaView) {
+            const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+            const effAsana = getEffectiveAsanaConfig(aConf);
+
+            let resText = "";
+            if (!effAsana.isConfigured) {
+                resText = `⚠️ *Asana is not connected yet.* Connect it on your web dashboard at http://localhost:3000`;
+            } else {
+                const rawTarget = userPrompt.match(asanaViewRegex)[1].trim();
+                const taskRef = await findOrResolveAsanaTask(aConf, sender, rawTarget);
+
+                if (!taskRef || !taskRef.gid) {
+                    resText = `⚠️ Could not find Asana task '${rawTarget}'. Try "asana list" to view tasks.`;
+                } else {
+                    try {
+                        const task = await getAsanaTask(aConf, taskRef.gid);
+                        resText = formatSingleAsanaTaskForWhatsApp(task);
+                    } catch (err) {
+                        resText = `❌ Could not load Asana task: ${err.message}`;
+                    }
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 2l. Direct Asana Help: "asana help" or bare "asana"
+        if (/^\s*(?:!asana|asana(?:\s+help)?)\s*$/i.test(userPrompt)) {
+            const helpText = `🔴 *Asana Commands Guide:*\n\n` +
+                `• *asana list* - View recent tasks\n` +
+                `• *asana <number>* (e.g. _asana 1_) - View task details\n` +
+                `• *asana add <title>* - Create a new task\n` +
+                `• *asana done <# or title>* (e.g. _asana done 1_ or _asana done dentist_) - Mark task completed\n` +
+                `• *asana update <#> rename <title>* - Rename task\n` +
+                `• *asana update <#> due tomorrow* - Update due date\n` +
+                `• *asana add project <name>* - Create a new project in Asana\n` +
+                `• *asana comment <#> <note>* - Add a comment\n` +
+                `• *prioritize tasks* - Prioritize Asana, Jira & Checklist tasks`;
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: helpText }] });
+            await sendReply(sock, sender, { text: helpText });
+            return;
+        }
+
+        // 3. Direct Google Calendar Commands: "calendar today", "schedule today", "!calendar", "calendar tomorrow"
+        const calTodayRegex = /^\s*(?:!calendar|calendar\s+today|schedule\s+today|my\s+schedule|my\s+meetings|calendar)\s*$/i;
+        const calTomorrowRegex = /^\s*(?:calendar\s+tomorrow|schedule\s+tomorrow)\s*$/i;
+        const calWeekRegex = /^\s*(?:calendar\s+(?:week|this\s+week)|schedule\s+(?:week|this\s+week))\s*$/i;
+
+        if (calTodayRegex.test(userPrompt) || calTomorrowRegex.test(userPrompt) || calWeekRegex.test(userPrompt)) {
+            const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+            const effCal = getEffectiveCalendarConfig(cConf);
+
+            let resText = "";
+            if (!effCal.isConfigured) {
+                resText = `⚠️ *Google Calendar is not connected yet.*\n\nPlease connect your Google Calendar service credentials in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                const timeFrame = calTomorrowRegex.test(userPrompt) ? "tomorrow" : calWeekRegex.test(userPrompt) ? "this_week" : "today";
+                try {
+                    const calResult = await listCalendarEvents(cConf, { timeFrame });
+                    resText = formatEventsForWhatsApp(calResult);
+                } catch (err) {
+                    resText = `❌ Error loading Google Calendar: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 3a. Direct Instant Google Meet: "gmeet", "new gmeet", "instant meet", "create meet", "gmeet link", "g-meet", "google meet", "!meet"
+        const instantMeetRegex = /^\s*(?:!meet|!gmeet|instant\s+meet|new\s+meet|create\s+meet|new\s+g-?meet|g-?meet\s+link|google\s+meet\s+link|instant\s+g-?meet|start\s+(?:a\s+)?g-?meet|create\s+(?:a\s+)?g-?meet|g-?meet|google\s+meet)\s*$/i;
+        if (instantMeetRegex.test(userPrompt)) {
+            const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+            const effCal = getEffectiveCalendarConfig(cConf);
+
+            let resText = "";
+            if (!effCal.isConfigured) {
+                const meetLink = generateGoogleMeetLink();
+                resText = `💻 *Google Meet Ready!*\n\n` +
+                    `🔗 *Meeting Link:* ${meetLink}\n` +
+                    `⏰ *Time:* Starting Now\n\n` +
+                    `👉 Tap the link above to start your meeting!\n\n` +
+                    `💡 _Connect Google Calendar at http://localhost:3000 to sync all meetings to your schedule._`;
+            } else {
+                try {
+                    const meet = await createInstantGoogleMeet(cConf, {
+                        summary: "Instant Google Meet",
+                        durationMinutes: 30
+                    });
+                    resText = formatInstantMeetForWhatsApp(meet);
+                } catch (err) {
+                    const fallbackLink = generateGoogleMeetLink();
+                    resText = `💻 *Google Meet Ready!*\n\n` +
+                        `🔗 *Meeting Link:* ${fallbackLink}\n` +
+                        `⏰ *Time:* Starting Now\n\n` +
+                        `👉 Tap the link above to join!`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 3b. Direct Schedule Google Meet: "schedule gmeet tomorrow at 3pm with Team", "schedule a meet tomorrow at 4pm"
+        const scheduleMeetMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:schedule|set\s+up|book)\s+(?:a\s+)?(?:g-?meet|google\s+meet|meeting|meet)\s+(?:with\s+([^,]+?)\s+)?(?:(today|tomorrow|on\s+[^,]+?)\s+)?(?:at\s+([0-2]?[0-9](?::[0-5][0-9])?\s*(?:am|pm)?))\s*(?:about\s+(.+))?$/is);
+        if (scheduleMeetMatch) {
+            const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+            const effCal = getEffectiveCalendarConfig(cConf);
+
+            let resText = "";
+            if (!effCal.isConfigured) {
+                resText = `⚠️ *Google Calendar is not connected yet.*\n\nPlease connect your Google Calendar in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                const withWho = scheduleMeetMatch[1]?.trim() || "";
+                const dayStr = scheduleMeetMatch[2]?.trim().toLowerCase() || "today";
+                const timeStr = scheduleMeetMatch[3]?.trim() || "10:00 AM";
+                const aboutStr = scheduleMeetMatch[4]?.trim() || "";
+
+                const parsedClock = parseClockTime(timeStr);
+                const targetDate = new Date();
+                if (dayStr === "tomorrow") {
+                    targetDate.setDate(targetDate.getDate() + 1);
+                }
+                if (parsedClock) {
+                    targetDate.setHours(parsedClock.hours, parsedClock.minutes, 0, 0);
+                }
+
+                const title = `Meeting ${withWho ? `with ${withWho}` : ""}${aboutStr ? `: ${aboutStr}` : ""}`.trim() || "Google Meet";
+                try {
+                    const created = await createCalendarEvent(cConf, {
+                        summary: title,
+                        description: `Scheduled via Anam AI WhatsApp Bot`,
+                        startDateTime: targetDate.toISOString(),
+                        durationMinutes: 30,
+                        addMeet: true
+                    });
+                    resText = formatCreatedEventForWhatsApp(created);
+
+                    // Sync reminder alert
+                    if (targetDate.getTime() > Date.now()) {
+                        try {
+                            await createAndSaveReminder(sock, sender, {
+                                targetTimestamp: targetDate.getTime(),
+                                isTomorrow: dayStr === "tomorrow",
+                                name: title,
+                                description: `Join Google Meet: ${created.meetLink || created.hangoutLink}`
+                            }, dbUser ? dbUser.id : null);
+                        } catch (e) {}
+                    }
+                } catch (err) {
+                    resText = `❌ Could not schedule meeting: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // ---------------- DIRECT EMAIL / GMAIL COMMANDS ----------------
+
+        // 4a. Direct Email Help: "email help", "!email", "mail help"
+        if (/^\s*(?:!email|email\s+help|mail\s+help)\s*$/i.test(userPrompt)) {
+            const helpText = `✉️ *Email & Gmail Assistant Commands:*\n\n` +
+                `• *draft email to <email> about <topic>* - Compose an email draft\n` +
+                `• *email drafts* or *gmail drafts* - View all saved drafts\n` +
+                `• *send draft <#>* (e.g. _send draft 1_) - Send saved draft now\n` +
+                `• *delete draft <#>* - Discard saved draft\n` +
+                `• *email status* - Check connected Gmail account and status\n` +
+                `• *update email to <address>* - Update your Gmail address\n` +
+                `• *set email password <16-char-pass>* - Update Google App Password\n` +
+                `• *send email to <email> about <topic>* - Send directly without drafting\n\n` +
+                `💡 _Natural phrasing works anywhere, e.g.:\n` +
+                `"Draft an email to anamikasuresh963@gmail.com about meeting today at 8:35pm"_`;
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: helpText }] });
+            await sendReply(sock, sender, { text: helpText });
+            return;
+        }
+
+        // 4b. Direct Email Status: "email status", "gmail status", "my email", "email info"
+        if (/^\s*(?:email\s+status|gmail\s+status|my\s+email|email\s+info)\s*$/i.test(userPrompt)) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account in the web dashboard at http://localhost:3000 first.";
+            } else {
+                const eConf = db.getUserIntegration(dbUser.id, "email");
+                const drafts = db.getUserEmailDrafts(dbUser.id, "draft");
+                const effEmail = getEffectiveEmailConfig(eConf);
+                resText = `✉️ *Email & Gmail Integration Status:*\n\n` +
+                    `• *Sender Account:* \`${effEmail.email || "Not configured"}\`\n` +
+                    `• *Connection Status:* ${effEmail.isConfigured ? "✅ Connected & Active" : "⚠️ Password / Setup Needed"}\n` +
+                    `• *Pending Drafts:* ${drafts.length} saved draft(s)\n\n` +
+                    `💡 *Quick Commands:*\n` +
+                    `• *email drafts* - View saved drafts\n` +
+                    `• *update email to <new-email>*\n` +
+                    `• *set email password <16-char-code>*`;
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4c. Direct Update Email Address: "update email to <email>", "set email <email>", "change email to <email>"
+        const updateEmailMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:update|change|set)\s+(?:my\s+)?email(?:\s+to)?\s+([^\s,;]+@[^\s,;]+)\s*$/i);
+        if (updateEmailMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your WhatsApp number in the dashboard at http://localhost:3000 first.";
+            } else {
+                const newEmail = updateEmailMatch[1].trim();
+                const existing = db.getUserIntegration(dbUser.id, "email") || {};
+                const configObj = {
+                    email: newEmail,
+                    appPassword: existing.appPassword || "",
+                    senderName: existing.senderName || dbUser.name || "Anamika"
+                };
+                db.saveUserIntegration(dbUser.id, "email", configObj, configObj.appPassword ? 1 : 0);
+
+                let verified = false;
+                if (configObj.appPassword) {
+                    try {
+                        await verifyEmailConnection(configObj);
+                        verified = true;
+                    } catch (err) {
+                        verified = false;
+                    }
+                }
+
+                if (verified) {
+                    resText = `✅ *Email Updated Successfully!*\n\n` +
+                        `📬 *Active Account:* \`${newEmail}\`\n` +
+                        `🔒 *Password:* Verified & Connected\n\n` +
+                        `You are all set to draft and send emails! Say _"draft email to <email> about <topic>"_ to start.`;
+                } else {
+                    resText = `✅ *Email Address Saved:*\n\`${newEmail}\`\n\n` +
+                        `⚠️ *Next Step: Google App Password*\n` +
+                        `Google requires a 16-character App Password specifically for \`${newEmail}\`:\n` +
+                        `1. Open: https://myaccount.google.com/apppasswords\n` +
+                        `2. Create an app password for "Mail"\n` +
+                        `3. Reply here with:\n` +
+                        `   👉 *set email password <your-16-char-code>*\n\n` +
+                        `_(Or configure it in your dashboard at http://localhost:3000 -> Integrations)_`;
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4d. Direct Set Email Password: "set email password <16-char>", "update email password <16-char>"
+        const updatePassMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:update|set)\s+(?:my\s+)?(?:email|gmail)\s+password(?:\s+to)?\s+([a-zA-Z0-9\s]{16,30})\s*$/i);
+        if (updatePassMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account at http://localhost:3000 first.";
+            } else {
+                const rawPass = updatePassMatch[1];
+                const cleaned = cleanAppPassword(rawPass);
+                const existing = db.getUserIntegration(dbUser.id, "email") || {};
+                const configObj = {
+                    email: existing.email || dbUser.email || "",
+                    appPassword: cleaned,
+                    senderName: existing.senderName || dbUser.name || "Anamika"
+                };
+                db.saveUserIntegration(dbUser.id, "email", configObj, 1);
+
+                try {
+                    await verifyEmailConnection(configObj);
+                    resText = `✅ *Gmail Connected Successfully!*\n\n` +
+                        `📬 *Sender Account:* \`${configObj.email}\`\n` +
+                        `🔒 *Google App Password:* Verified & Active\n\n` +
+                        `You can now draft and send emails directly through WhatsApp!\n` +
+                        `• Say: _"draft email to client@example.com about meeting tomorrow"_\n` +
+                        `• Say: _"email drafts"_ to view saved drafts`;
+                } catch (verErr) {
+                    resText = `⚠️ *Password Saved, but Google Verification Failed:*\n\n` +
+                        `Account: \`${configObj.email}\`\n` +
+                        `Error: ${verErr.message}\n\n` +
+                        `👉 Make sure 2-Step Verification is ON for \`${configObj.email}\` and generate a fresh App Password at https://myaccount.google.com/apppasswords.`;
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4e. Direct Email Drafts List: "email drafts", "gmail drafts", "show drafts", "my drafts", "list drafts", "drafts"
+        const emailDraftsListMatch = userPrompt.match(/^\s*(?:(?:gmail|email|my)?\s*drafts?|(?:show|list|view|get)\s*(?:all\s*)?(?:gmail|email)?\s*drafts?)\s*$/i);
+        if (emailDraftsListMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account in the web dashboard at http://localhost:3000 to manage email drafts.";
+            } else {
+                const drafts = db.getUserEmailDrafts(dbUser.id, "draft");
+                resText = formatDraftListForWhatsApp(drafts);
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4f. Direct Send Draft: "send draft 1", "email send draft 2", "send draft #1"
+        const sendDraftMatch = userPrompt.match(/^\s*(?:email\s+)?send\s+draft\s+#?(\d+)\s*$/i);
+        if (sendDraftMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account on http://localhost:3000 to send emails.";
+            } else {
+                const eConf = db.getUserIntegration(dbUser.id, "email");
+                const effEmail = getEffectiveEmailConfig(eConf);
+                if (!effEmail.isConfigured) {
+                    resText = "⚠️ Gmail is not connected yet. Please add your Gmail address and 16-character App Password at http://localhost:3000 -> Integrations tab or reply *set email password <pass>*.";
+                } else {
+                    const draftId = parseInt(sendDraftMatch[1], 10);
+                    const draft = db.getEmailDraftById(draftId, dbUser.id);
+                    if (!draft || draft.status !== "draft") {
+                        resText = `⚠️ Could not find pending draft #${draftId}. Reply "email drafts" to view your saved drafts.`;
+                    } else {
+                        try {
+                            const sentResult = await sendEmail(eConf, {
+                                to: draft.recipient,
+                                subject: draft.subject,
+                                body: draft.body
+                            });
+                            db.updateEmailDraft(draftId, dbUser.id, { status: "sent" });
+                            resText = formatSentEmailForWhatsApp(sentResult);
+                        } catch (err) {
+                            resText = `❌ Could not send email: ${err.message}`;
+                        }
+                    }
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4g. Direct Delete Draft: "delete draft 1", "discard draft 1"
+        const deleteDraftMatch = userPrompt.match(/^\s*(?:delete|discard|remove)\s+draft\s+#?(\d+)\s*$/i);
+        if (deleteDraftMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account on http://localhost:3000 first.";
+            } else {
+                const draftId = parseInt(deleteDraftMatch[1], 10);
+                const draft = db.getEmailDraftById(draftId, dbUser.id);
+                if (!draft) {
+                    resText = `⚠️ Draft #${draftId} not found.`;
+                } else {
+                    db.deleteEmailDraft(draftId, dbUser.id);
+                    resText = `🗑️ Draft #${draftId} discarded.`;
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4h. Direct Edit Draft: "edit draft 1 body <new text>", "edit draft 1 subject <new subject>"
+        const editDraftMatch = userPrompt.match(/^\s*(?:edit|change|update)\s+draft\s+#?(\d+)\s+(body|subject)\s+(.+)$/is);
+        if (editDraftMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account at http://localhost:3000 first.";
+            } else {
+                const draftId = parseInt(editDraftMatch[1], 10);
+                const field = editDraftMatch[2].toLowerCase();
+                const newVal = editDraftMatch[3].trim();
+                const draft = db.getEmailDraftById(draftId, dbUser.id);
+                if (!draft || draft.status !== "draft") {
+                    resText = `⚠️ Could not find pending draft #${draftId}.`;
+                } else {
+                    const updates = {};
+                    if (field === "body") updates.body = newVal;
+                    else updates.subject = newVal;
+                    const updated = db.updateEmailDraft(draftId, dbUser.id, updates);
+                    resText = `✏️ *Draft #${draftId} Updated!*\n\n` + formatDraftForWhatsApp(updated, false);
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4i. Natural Language Email Drafting: "draft an email to <email> about/saying/regarding <topic>"
+        const naturalDraftMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:draft|compose|write)(?:\s+an?)?\s+email\s+to\s+([^\s,;]+@[^\s,;]+)(?:\s+(?:about|regarding|saying|subject|titled)\s+(.+))?$/is);
+        if (naturalDraftMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account on http://localhost:3000 to save email drafts.";
+            } else {
+                const to = naturalDraftMatch[1].trim();
+                const topic = naturalDraftMatch[2]?.trim() || "Follow up";
+                try {
+                    const generated = await generateEmailDraftContent({
+                        to,
+                        topic,
+                        senderName: dbUser.name || "Anamika",
+                        generateAIContent: ai ? generateAIContent : null
+                    });
+                    const draft = db.createEmailDraft(dbUser.id, to, generated.subject, generated.body);
+                    resText = formatDraftForWhatsApp(draft, true);
+                } catch (err) {
+                    resText = `❌ Error creating email draft: ${err.message}`;
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4j. Direct Structured Draft: "email draft to <recipient> subject <subj> body <body text>"
+        const structuredDraftMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:email\s+)?draft(?:\s+email)?\s+to\s+([^\s,;]+@[^\s,;]+)\s+subject\s+(.+?)\s+body\s+(.+)$/is);
+        if (structuredDraftMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account on http://localhost:3000 to save email drafts.";
+            } else {
+                const to = structuredDraftMatch[1].trim();
+                const subject = structuredDraftMatch[2].trim();
+                const body = structuredDraftMatch[3].trim();
+                const draft = db.createEmailDraft(dbUser.id, to, subject, body);
+                resText = formatDraftForWhatsApp(draft, true);
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4k. Direct Natural Send: "send an email to <recipient> about/saying <topic>"
+        const naturalSendMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:send|mail)(?:\s+an?)?\s+email\s+to\s+([^\s,;]+@[^\s,;]+)(?:\s+(?:about|regarding|saying)\s+(.+))?$/is);
+        if (naturalSendMatch && !/^\s*send\s+draft/i.test(userPrompt)) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account on http://localhost:3000 to send emails.";
+            } else {
+                const eConf = db.getUserIntegration(dbUser.id, "email");
+                const effEmail = getEffectiveEmailConfig(eConf);
+                if (!effEmail.isConfigured) {
+                    resText = "⚠️ Gmail is not connected yet. Please add your Gmail address and 16-character App Password at http://localhost:3000 -> Integrations tab.";
+                } else {
+                    const to = naturalSendMatch[1].trim();
+                    const topic = naturalSendMatch[2]?.trim() || "Follow up";
+                    try {
+                        const generated = await generateEmailDraftContent({
+                            to,
+                            topic,
+                            senderName: dbUser.name || "Anamika",
+                            generateAIContent: ai ? generateAIContent : null
+                        });
+                        const sentResult = await sendEmail(eConf, {
+                            to,
+                            subject: generated.subject,
+                            body: generated.body
+                        });
+                        resText = formatSentEmailForWhatsApp(sentResult);
+                    } catch (err) {
+                        resText = `❌ Could not send email: ${err.message}`;
+                    }
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 4l. Direct Structured Send: "email send to <recipient> subject <subj> body <body text>"
+        const structuredSendMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:email\s+)?send(?:\s+email)?\s+to\s+([^\s,;]+@[^\s,;]+)\s+subject\s+(.+?)\s+body\s+(.+)$/is);
+        if (structuredSendMatch) {
+            let resText = "";
+            if (!dbUser) {
+                resText = "⚠️ Please link your account on http://localhost:3000 to send emails.";
+            } else {
+                const eConf = db.getUserIntegration(dbUser.id, "email");
+                const effEmail = getEffectiveEmailConfig(eConf);
+                if (!effEmail.isConfigured) {
+                    resText = "⚠️ Gmail is not connected yet. Please add your Gmail address and 16-character App Password at http://localhost:3000 -> Integrations tab.";
+                } else {
+                    const to = structuredSendMatch[1].trim();
+                    const subject = structuredSendMatch[2].trim();
+                    const body = structuredSendMatch[3].trim();
+                    try {
+                        const sentResult = await sendEmail(eConf, { to, subject, body });
+                        resText = formatSentEmailForWhatsApp(sentResult);
+                    } catch (err) {
+                        resText = `❌ Could not send email: ${err.message}`;
+                    }
+                }
+            }
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // ---------------- DIRECT GOOGLE DRIVE COMMANDS ----------------
+
+        // 5a. Direct Drive Help: "drive help", "!drive", "drive", "google drive"
+        if (/^\s*(?:!drive|drive(?:\s+help)?|google\s+drive(?:\s+help)?)\s*$/i.test(userPrompt)) {
+            const helpText = `📂 *Google Drive Assistant Commands:*\n\n` +
+                `• *drive list* or *my drive* - View recent Google Drive files\n` +
+                `• *drive search <query>* (e.g. _drive search report_) - Search files\n` +
+                `• *drive folder <name>* (e.g. _drive folder Project Alpha_) - Create folder\n` +
+                `• *drive share <filename>* - Generate shareable link\n` +
+                `• *drive delete <filename>* - Remove file from Drive\n\n` +
+                `☁️ *Upload files effortlessly:*\n` +
+                `Send any photo, video, PDF, or document on WhatsApp with caption *"save to drive"*!`;
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: helpText }] });
+            await sendReply(sock, sender, { text: helpText });
+            return;
+        }
+
+        // 5b. Direct Drive List: "drive list", "drive files", "my drive", "my files", "list drive"
+        if (/^\s*(?:drive\s+(?:files|list)|my\s+(?:drive|drive\s+files|files)|list\s+drive(?:\s+files)?)\s*$/i.test(userPrompt)) {
+            const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+            const effDrive = getEffectiveDriveConfig(dConf);
+
+            let resText = "";
+            if (!effDrive.isConfigured) {
+                resText = `⚠️ *Google Drive is not connected yet.*\n\nPlease connect your Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                try {
+                    const filesResult = await listDriveFiles(dConf, { pageSize: 10 });
+                    resText = formatDriveFilesForWhatsApp(filesResult);
+                } catch (err) {
+                    resText = `❌ Error loading Google Drive: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 5c. Direct Drive Search: "drive search <query>", "search drive for <query>", "find file <query>"
+        const driveSearchMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:drive\s+search|search\s+drive(?:\s+for)?|find\s+(?:drive\s+)?file|find\s+on\s+drive)\s+(.+)$/i);
+        if (driveSearchMatch) {
+            const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+            const effDrive = getEffectiveDriveConfig(dConf);
+
+            let resText = "";
+            if (!effDrive.isConfigured) {
+                resText = `⚠️ *Google Drive is not connected yet.*\n\nPlease connect Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                const query = driveSearchMatch[1].trim();
+                try {
+                    const searchResult = await searchDriveFiles(dConf, { query, pageSize: 10 });
+                    resText = formatDriveFilesForWhatsApp(searchResult);
+                } catch (err) {
+                    resText = `❌ Error searching Google Drive: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 5d. Direct Drive Create Folder: "drive folder <name>", "drive new folder <name>", "drive mkdir <name>"
+        const driveFolderMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:drive\s+(?:new\s+)?folder|drive\s+mkdir|create\s+drive\s+folder)\s+(.+)$/i);
+        if (driveFolderMatch) {
+            const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+            const effDrive = getEffectiveDriveConfig(dConf);
+
+            let resText = "";
+            if (!effDrive.isConfigured) {
+                resText = `⚠️ *Google Drive is not connected yet.*\n\nPlease connect Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                const folderName = driveFolderMatch[1].trim();
+                try {
+                    const folder = await createDriveFolder(dConf, { folderName });
+                    resText = formatFolderCreatedForWhatsApp(folder);
+                } catch (err) {
+                    resText = `❌ Error creating Google Drive folder: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 5e. Direct Drive Upload / Save Note: "drive upload <filename> | <content>", "drive save <filename> | <content>", "drive note <filename> | <content>"
+        const driveUploadMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?(?:drive\s+(?:upload|save|note|create\s+file))\s+([^|:]+)[|:]([\s\S]+)$/i);
+        if (driveUploadMatch) {
+            const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+            const effDrive = getEffectiveDriveConfig(dConf);
+
+            let resText = "";
+            if (!effDrive.isConfigured) {
+                resText = `⚠️ *Google Drive is not connected yet.*\n\nPlease connect Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                let fileName = driveUploadMatch[1].trim();
+                if (!fileName.includes(".")) fileName += ".txt";
+                const fileContent = driveUploadMatch[2].trim();
+                const buffer = Buffer.from(fileContent, "utf-8");
+                try {
+                    const uploaded = await uploadDriveFile(dConf, {
+                        fileName,
+                        mimeType: "text/plain",
+                        buffer
+                    });
+                    resText = formatUploadedFileForWhatsApp(uploaded);
+                } catch (err) {
+                    resText = `❌ Error uploading to Google Drive: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 5f. Direct Drive Share: "drive share <filename>"
+        const driveShareMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?drive\s+share\s+(.+)$/i);
+        if (driveShareMatch) {
+            const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+            const effDrive = getEffectiveDriveConfig(dConf);
+
+            let resText = "";
+            if (!effDrive.isConfigured) {
+                resText = `⚠️ *Google Drive is not connected yet.*\n\nPlease connect Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                const searchName = driveShareMatch[1].trim();
+                try {
+                    const searchRes = await listDriveFiles(dConf, { query: searchName, pageSize: 3 });
+                    if (!searchRes.files || searchRes.files.length === 0) {
+                        resText = `🔍 Could not find file "${searchName}" on Google Drive.`;
+                    } else {
+                        const targetFile = searchRes.files[0];
+                        const shared = await shareDriveFile(dConf, { fileId: targetFile.id });
+                        resText = `🔗 *Google Drive Share Link:*\n\n• *File:* ${shared.name}\n• *Link:* ${shared.webViewLink}\n• *Access:* Anyone with link can view`;
+                    }
+                } catch (err) {
+                    resText = `❌ Could not share Google Drive file: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
+        // 5g. Direct Drive Delete: "drive delete <filename>"
+        const driveDeleteMatch = userPrompt.match(/^\s*(?:hey\s+anam[,:\s]*)?drive\s+delete\s+(.+)$/i);
+        if (driveDeleteMatch) {
+            const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+            const effDrive = getEffectiveDriveConfig(dConf);
+
+            let resText = "";
+            if (!effDrive.isConfigured) {
+                resText = `⚠️ *Google Drive is not connected yet.*\n\nPlease connect Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.`;
+            } else {
+                const fileName = driveDeleteMatch[1].trim();
+                try {
+                    const deleted = await deleteDriveFile(dConf, { searchName: fileName });
+                    resText = `🗑️ ${deleted.message}`;
+                } catch (err) {
+                    resText = `❌ Could not delete Google Drive file: ${err.message}`;
+                }
+            }
+
+            session.history.push({ role: "user", parts: [{ text: userPrompt }] });
+            session.history.push({ role: "model", parts: [{ text: resText }] });
+            await sendReply(sock, sender, { text: resText });
+            return;
+        }
+
         // Check for Pending Tomorrow Session (Bug 3 Fix)
         if (pendingTomorrowSessions.has(sender)) {
             const pending = pendingTomorrowSessions.get(sender);
@@ -1499,7 +3430,7 @@ _Type *"bye"* or *"exit"* when done._`;
                     description: pending.description || ""
                 };
 
-                const confirmMsg = createAndSaveReminder(sock, sender, newParsedCmd, dbUser ? dbUser.id : null);
+                const confirmMsg = await createAndSaveReminder(sock, sender, newParsedCmd, dbUser ? dbUser.id : null);
                 session.history.push({ role: "user", parts: [{ text: userPrompt }] });
                 session.history.push({ role: "model", parts: [{ text: confirmMsg }] });
                 await sendReply(sock, sender, { text: confirmMsg });
@@ -1527,7 +3458,7 @@ _Type *"bye"* or *"exit"* when done._`;
                 parsedCmd.name = "your file";
             }
 
-            const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
+            const confirmMsg = await createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
             session.history.push({ role: "user", parts: [{ text: userPrompt }] });
             session.history.push({ role: "model", parts: [{ text: confirmMsg }] });
             await sendReply(sock, sender, { text: confirmMsg });
@@ -1569,7 +3500,7 @@ _Type *"bye"* or *"exit"* when done._`;
             }
 
             if (parsedCmd.targetTimestamp) {
-                const confirmMsg = createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
+                const confirmMsg = await createAndSaveReminder(sock, sender, parsedCmd, dbUser ? dbUser.id : null);
                 session.history.push({ role: "user", parts: [{ text: userPrompt }] });
                 session.history.push({ role: "model", parts: [{ text: confirmMsg }] });
                 await sendReply(sock, sender, { text: confirmMsg });
@@ -1584,7 +3515,7 @@ _Type *"bye"* or *"exit"* when done._`;
             return;
         }
 
-        // 4. Handle To-Do and General AI queries via Gemini
+        // 4. Handle To-Do, Integrations, and General AI queries via Gemini
         const systemInstruction = `You are Anam, a smart WhatsApp assistant${dbUser ? ` for ${dbUser.name}` : ''}.
 Current Local Time: ${new Date().toLocaleString()}
 ${session.summary ? `Previous Conversation Summary: "${session.summary}"` : ""}
@@ -1593,6 +3524,34 @@ CRITICAL RULES:
 1. TO-DO CHECKLIST: Only call 'add_todo' when user wants to add an item to their static checklist without a time trigger (e.g. 'add milk to list').
 2. SHOW TASKS: Call 'get_todos' when user asks 'show tasks', 'what are my tasks', 'my todo list', 'todos'.
 3. COMPLETE TASK: Call 'complete_todo' when user says 'done 1', 'check off 2'.
+4. JIRA INTEGRATION:
+   - Call 'jira_create_issue' when user asks to create/log a Jira issue, ticket, bug, or task.
+   - Call 'jira_get_issues' when user asks to see their tickets, tasks in Jira, or sprint items.
+   - Call 'jira_transition_issue' when user asks to change ticket status, close, or finish an issue.
+   - Call 'jira_add_comment' to add a note/comment to a Jira ticket.
+5. GOOGLE CALENDAR & GOOGLE MEET:
+   - Call 'create_instant_meet' when user asks for an instant Google Meet, meet link, 'start a meet', 'new gmeet', or 'g-meet link'.
+   - Call 'calendar_create_event' when user wants to schedule, add, or book a meeting, call, appointment, or Google Meet on Google Calendar. It automatically includes an authentic Google Meet link.
+   - Call 'calendar_list_events' when user asks about their schedule, meetings, appointments, or agenda for today, tomorrow, or this week.
+   - Call 'calendar_delete_event' when user wants to cancel or delete a calendar event.
+6. ASANA AI TASK & PROJECT MANAGEMENT:
+   - Call 'asana_get_tasks' when user asks to see Asana tasks, workspace to-dos, or project tasks.
+   - Call 'asana_create_task' when user asks to create/add a task in Asana or assign an Asana to-do.
+   - Call 'asana_complete_task' when user wants to check off, finish, or complete an Asana task.
+   - Call 'asana_update_task' when user wants to edit, update, rename, change due date, notes, or status of an Asana task.
+   - Call 'asana_create_project' when user wants to create/add a new project in Asana.
+   - Call 'asana_add_comment' to add a comment or note to an Asana task.
+7. EMAIL & GMAIL DRAFTING & SENDING:
+   - Call 'email_draft' when user asks to draft, compose, write, or prepare an email to someone (e.g. 'draft an email to boss@company.com saying...'). Always generate a polite, complete subject line and professional email body.
+   - Call 'email_send' when user asks to send an email (or says 'send draft 1' / 'send it').
+   - Call 'email_list_drafts' when user asks to see their saved drafts or pending emails.
+8. GOOGLE DRIVE:
+   - Call 'drive_list_files' when user asks to see, check, or list files and folders in Google Drive.
+   - Call 'drive_search_files' when user asks to find, locate, or search for a document, spreadsheet, PDF, presentation, or file in Google Drive.
+   - Call 'drive_create_folder' when user asks to create or make a folder in Google Drive.
+   - Call 'drive_upload_text' when user asks to save, write, or upload a text note or document to Google Drive.
+   - Call 'drive_share_file' when user asks to share or get a link for a file in Google Drive.
+   - Call 'drive_delete_file' when user asks to delete or remove a file from Google Drive.
 
 Reply like a friendly person texting. Short, plain words. No headings. No bullet lists unless the user asks. No bold unless needed. Never say you are an AI model.`;
 
@@ -1649,7 +3608,19 @@ Reply like a friendly person texting. Short, plain words. No headings. No bullet
                                     return `${count++}. ${r.name}${descStr} - ${timeStr}`;
                                 }).join("\n");
                             }
-                            resultText = `Your Tasks:\n${listStr}`;
+
+                            const isAnalytical = /\b(priorit|rank|which|summar|what\s+should|focus|first|urgent|recommend|advise)\b/i.test(userPrompt);
+                            if (isAnalytical && ai) {
+                                const synthPrompt = `You are Anam, executive assistant.\nUser request: "${userPrompt}"\n\nUser's tasks:\n${listStr}\n\nAnswer the user's question directly, clearly, and concisely for WhatsApp.`;
+                                try {
+                                    const synthRes = await generateAIContent([{ role: "user", parts: [{ text: synthPrompt }] }], undefined);
+                                    resultText = synthRes.text?.trim() || `Your Tasks:\n${listStr}`;
+                                } catch {
+                                    resultText = `Your Tasks:\n${listStr}`;
+                                }
+                            } else {
+                                resultText = `Your Tasks:\n${listStr}`;
+                            }
                         }
                     } else if (name === "complete_todo") {
                         const idx = args.task_number;
@@ -1693,6 +3664,466 @@ Reply like a friendly person texting. Short, plain words. No headings. No bullet
                     } else if (name === "clear_memory") {
                         clearSession(sender);
                         resultText = "Memory cleared! Starting fresh.";
+                    } else if (name === "jira_create_issue") {
+                        const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+                        const effJira = getEffectiveJiraConfig(jConf);
+                        if (!effJira.isConfigured) {
+                            resultText = "⚠️ Jira is not connected yet. Please connect your Jira domain & API token in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const created = await createJiraIssue(jConf, {
+                                    summary: args.summary,
+                                    description: args.description || "",
+                                    projectKey: args.project_key || effJira.defaultProject || "",
+                                    issueType: args.issue_type || "Task"
+                                });
+                                resultText = formatCreatedIssueForWhatsApp(created);
+                            } catch (err) {
+                                resultText = `❌ Could not create Jira issue: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "jira_get_issues") {
+                        const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+                        const effJira = getEffectiveJiraConfig(jConf);
+                        if (!effJira.isConfigured) {
+                            resultText = "⚠️ Jira is not connected yet. Please connect your Jira account in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const issuesResult = await getJiraIssues(jConf, {
+                                    jql: args.jql || "",
+                                    maxResults: args.max_results || 5
+                                });
+                                if (issuesResult.issues) {
+                                    lastJiraIssuesBySender.set(sender, issuesResult.issues);
+                                }
+
+                                const isAnalytical = /\b(priorit|rank|which|summar|what\s+should|focus|first|urgent|how\s+many|who|why|recommend|advise)\b/i.test(userPrompt);
+                                if (isAnalytical && ai && issuesResult.issues && issuesResult.issues.length > 0) {
+                                    const synthPrompt = `You are Anam, executive assistant.\nUser request: "${userPrompt}"\n\nJira tickets found:\n${JSON.stringify(issuesResult.issues)}\n\nAnswer the user's question directly, clearly, and concisely for WhatsApp.`;
+                                    try {
+                                        const synthRes = await generateAIContent([{ role: "user", parts: [{ text: synthPrompt }] }], undefined);
+                                        resultText = synthRes.text?.trim() || formatIssuesForWhatsApp(issuesResult);
+                                    } catch {
+                                        resultText = formatIssuesForWhatsApp(issuesResult);
+                                    }
+                                } else {
+                                    resultText = formatIssuesForWhatsApp(issuesResult);
+                                }
+                            } catch (err) {
+                                resultText = `❌ Error retrieving Jira issues: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "jira_transition_issue") {
+                        const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+                        const effJira = getEffectiveJiraConfig(jConf);
+                        if (!effJira.isConfigured) {
+                            resultText = "⚠️ Jira is not connected yet.";
+                        } else {
+                            try {
+                                const res = await transitionJiraIssue(jConf, {
+                                    issueKey: args.issue_key,
+                                    transitionName: args.target_status
+                                });
+                                resultText = formatTransitionForWhatsApp(res);
+                            } catch (err) {
+                                resultText = `❌ Could not update Jira status: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "jira_add_comment") {
+                        const jConf = dbUser ? db.getUserIntegration(dbUser.id, "jira") : null;
+                        const effJira = getEffectiveJiraConfig(jConf);
+                        if (!effJira.isConfigured) {
+                            resultText = "⚠️ Jira is not connected yet.";
+                        } else {
+                            try {
+                                await addJiraComment(jConf, {
+                                    issueKey: args.issue_key,
+                                    comment: args.comment
+                                });
+                                resultText = `💬 Comment added to Jira ticket *${args.issue_key.toUpperCase()}*!`;
+                            } catch (err) {
+                                resultText = `❌ Could not add Jira comment: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "calendar_list_events") {
+                        const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+                        const effCal = getEffectiveCalendarConfig(cConf);
+                        if (!effCal.isConfigured) {
+                            resultText = "⚠️ Google Calendar is not connected yet. Please connect your Google Calendar in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const eventsResult = await listCalendarEvents(cConf, {
+                                    timeFrame: args.time_frame || "today",
+                                    maxResults: args.max_results || 10
+                                });
+                                resultText = formatEventsForWhatsApp(eventsResult);
+                            } catch (err) {
+                                resultText = `❌ Error loading Google Calendar: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "calendar_create_event") {
+                        const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+                        const effCal = getEffectiveCalendarConfig(cConf);
+                        if (!effCal.isConfigured) {
+                            resultText = "⚠️ Google Calendar is not connected yet. Please link your Google Calendar in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const addMeet = args.add_meet !== undefined ? Boolean(args.add_meet) : true;
+                                const created = await createCalendarEvent(cConf, {
+                                    summary: args.title,
+                                    description: args.description || "",
+                                    startDateTime: args.start_time,
+                                    durationMinutes: args.duration_minutes || 30,
+                                    location: args.location || "",
+                                    addMeet
+                                });
+                                resultText = formatCreatedEventForWhatsApp(created);
+
+                                // Also sync to WhatsApp bot reminder alerts
+                                try {
+                                    const eventDate = new Date(created.start);
+                                    if (!isNaN(eventDate.getTime()) && eventDate.getTime() > Date.now()) {
+                                        await createAndSaveReminder(sock, sender, {
+                                            targetTimestamp: eventDate.getTime(),
+                                            isTomorrow: false,
+                                            name: args.title,
+                                            description: created.meetLink ? `Join Google Meet: ${created.meetLink}` : (args.description || "")
+                                        }, dbUser ? dbUser.id : null);
+                                    }
+                                } catch (e) {}
+                            } catch (err) {
+                                resultText = `❌ Could not schedule calendar event: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "create_instant_meet") {
+                        const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+                        const effCal = getEffectiveCalendarConfig(cConf);
+                        if (!effCal.isConfigured) {
+                            const fallbackLink = generateGoogleMeetLink();
+                            resultText = `💻 *Google Meet Ready!*\n\n` +
+                                `🔗 *Meeting Link:* ${fallbackLink}\n` +
+                                `📌 *Topic:* *${args.topic || "Instant Google Meet"}*\n` +
+                                `⏰ *Time:* Starting Now (30 mins)\n\n` +
+                                `👉 Tap the link above to join! Share with your team to invite them.`;
+                        } else {
+                            try {
+                                const meet = await createInstantGoogleMeet(cConf, {
+                                    summary: args.topic || "Instant Google Meet",
+                                    durationMinutes: 30
+                                });
+                                resultText = formatInstantMeetForWhatsApp(meet);
+                            } catch (err) {
+                                const fallbackLink = generateGoogleMeetLink();
+                                resultText = `💻 *Google Meet Ready!*\n\n` +
+                                    `🔗 *Meeting Link:* ${fallbackLink}\n` +
+                                    `📌 *Topic:* *${args.topic || "Instant Google Meet"}*\n` +
+                                    `⏰ *Time:* Starting Now (30 mins)\n\n` +
+                                    `👉 Tap the link above to join!`;
+                            }
+                        }
+                    } else if (name === "calendar_delete_event") {
+                        const cConf = dbUser ? db.getUserIntegration(dbUser.id, "google_calendar") : null;
+                        const effCal = getEffectiveCalendarConfig(cConf);
+                        if (!effCal.isConfigured) {
+                            resultText = "⚠️ Google Calendar is not connected yet.";
+                        } else {
+                            try {
+                                await deleteCalendarEvent(cConf, {
+                                    eventId: args.event_id,
+                                    searchSummary: args.search_title
+                                });
+                                resultText = `🗑️ Calendar event canceled and removed from Google Calendar.`;
+                            } catch (err) {
+                                resultText = `❌ Could not remove calendar event: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "asana_get_tasks") {
+                        const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+                        const effAsana = getEffectiveAsanaConfig(aConf);
+                        if (!effAsana.isConfigured) {
+                            resultText = "⚠️ Asana is not connected yet. Please connect your Asana Personal Access Token in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const tasksResult = await getAsanaTasks(aConf, {
+                                    projectId: args.project_id || effAsana.defaultProject || undefined,
+                                    completed: args.completed !== undefined ? args.completed : false,
+                                    maxResults: args.max_results || 10
+                                });
+                                if (tasksResult.tasks) {
+                                    lastAsanaTasksBySender.set(sender, tasksResult.tasks);
+                                }
+                                resultText = formatAsanaTasksForWhatsApp(tasksResult);
+                            } catch (err) {
+                                resultText = `❌ Error loading Asana tasks: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "asana_create_task") {
+                        const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+                        const effAsana = getEffectiveAsanaConfig(aConf);
+                        if (!effAsana.isConfigured) {
+                            resultText = "⚠️ Asana is not connected yet. Please add your Asana token in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const created = await createAsanaTask(aConf, {
+                                    name: args.name,
+                                    notes: args.notes || "",
+                                    dueOn: args.due_on || undefined,
+                                    projectId: args.project_id || effAsana.defaultProject || undefined
+                                });
+                                resultText = formatCreatedAsanaTaskForWhatsApp(created);
+                            } catch (err) {
+                                resultText = `❌ Could not create Asana task: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "asana_complete_task") {
+                        const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+                        const effAsana = getEffectiveAsanaConfig(aConf);
+                        if (!effAsana.isConfigured) {
+                            resultText = "⚠️ Asana is not connected yet.";
+                        } else {
+                            const targetTask = await findOrResolveAsanaTask(aConf, sender, args.task_id);
+                            if (!targetTask || !targetTask.gid) {
+                                resultText = `⚠️ Could not find Asana task '${args.task_id}'. Try "asana list" to view tasks.`;
+                            } else {
+                                try {
+                                    const completed = await completeAsanaTask(aConf, targetTask.gid);
+                                    completed.name = targetTask.name || completed.name;
+                                    resultText = formatCompletedAsanaTaskForWhatsApp(completed);
+                                } catch (err) {
+                                    resultText = `❌ Could not complete Asana task: ${err.message}`;
+                                }
+                            }
+                        }
+                    } else if (name === "asana_update_task") {
+                        const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+                        const effAsana = getEffectiveAsanaConfig(aConf);
+                        if (!effAsana.isConfigured) {
+                            resultText = "⚠️ Asana is not connected yet.";
+                        } else {
+                            const targetTask = await findOrResolveAsanaTask(aConf, sender, args.task_id);
+                            if (!targetTask || !targetTask.gid) {
+                                resultText = `⚠️ Could not find Asana task '${args.task_id}'. Reply 'asana' to see your task list.`;
+                            } else {
+                                try {
+                                    const updates = {};
+                                    let changeSummary = "";
+                                    if (args.title) {
+                                        updates.name = args.title;
+                                        changeSummary += `Title: "${args.title}" `;
+                                    }
+                                    if (args.due_on) {
+                                        updates.dueOn = args.due_on;
+                                        changeSummary += `Due date: ${args.due_on} `;
+                                    }
+                                    if (args.notes) {
+                                        updates.notes = args.notes;
+                                        changeSummary += `Notes updated `;
+                                    }
+                                    if (args.completed !== undefined) {
+                                        updates.completed = Boolean(args.completed);
+                                        changeSummary += args.completed ? `Marked complete ` : `Reopened `;
+                                    }
+                                    const updated = await updateAsanaTask(aConf, targetTask.gid, updates);
+                                    resultText = formatUpdatedAsanaTaskForWhatsApp(updated, changeSummary.trim());
+                                } catch (err) {
+                                    resultText = `❌ Could not update Asana task: ${err.message}`;
+                                }
+                            }
+                        }
+                    } else if (name === "asana_create_project") {
+                        const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+                        const effAsana = getEffectiveAsanaConfig(aConf);
+                        if (!effAsana.isConfigured) {
+                            resultText = "⚠️ Asana is not connected yet. Please add your Asana token in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const project = await createAsanaProject(aConf, {
+                                    name: args.name,
+                                    notes: args.notes || "",
+                                    color: args.color || undefined
+                                });
+                                resultText = formatCreatedAsanaProjectForWhatsApp(project);
+                            } catch (err) {
+                                resultText = `❌ Could not create Asana project: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "asana_add_comment") {
+                        const aConf = dbUser ? db.getUserIntegration(dbUser.id, "asana") : null;
+                        const effAsana = getEffectiveAsanaConfig(aConf);
+                        if (!effAsana.isConfigured) {
+                            resultText = "⚠️ Asana is not connected yet.";
+                        } else {
+                            const targetTask = await findOrResolveAsanaTask(aConf, sender, args.task_id);
+                            if (!targetTask || !targetTask.gid) {
+                                resultText = `⚠️ Could not find Asana task '${args.task_id}'.`;
+                            } else {
+                                try {
+                                    await addAsanaComment(aConf, { taskGid: targetTask.gid, comment: args.comment || args.text });
+                                    resultText = `💬 Comment added to Asana task *${targetTask.name || ""}*!`;
+                                } catch (err) {
+                                    resultText = `❌ Could not add comment to Asana task: ${err.message}`;
+                                }
+                            }
+                        }
+                    } else if (name === "email_draft") {
+                        if (!dbUser) {
+                            resultText = "⚠️ Please link your account in the web dashboard at http://localhost:3000 to draft emails.";
+                        } else {
+                            try {
+                                const draft = db.createEmailDraft(dbUser.id, args.to, args.subject, args.body);
+                                resultText = formatDraftForWhatsApp(draft, true);
+                            } catch (err) {
+                                resultText = `❌ Could not save email draft: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "email_send") {
+                        if (!dbUser) {
+                            resultText = "⚠️ Please link your account in the web dashboard at http://localhost:3000 to send emails.";
+                        } else {
+                            const eConf = db.getUserIntegration(dbUser.id, "email");
+                            const effEmail = getEffectiveEmailConfig(eConf);
+                            if (!effEmail.isConfigured) {
+                                resultText = "⚠️ Gmail is not connected yet. Please add your Gmail address and 16-character App Password at http://localhost:3000 -> Integrations tab.";
+                            } else {
+                                try {
+                                    let to = args.to;
+                                    let subject = args.subject;
+                                    let body = args.body;
+                                    let draftId = args.draft_id;
+
+                                    if (draftId) {
+                                        const draft = db.getEmailDraftById(draftId, dbUser.id);
+                                        if (draft) {
+                                            to = to || draft.recipient;
+                                            subject = subject || draft.subject;
+                                            body = body || draft.body;
+                                        }
+                                    }
+
+                                    const sent = await sendEmail(eConf, { to, subject, body });
+                                    if (draftId) {
+                                        db.updateEmailDraft(draftId, dbUser.id, { status: "sent" });
+                                    }
+                                    resultText = formatSentEmailForWhatsApp(sent);
+                                } catch (err) {
+                                    resultText = `❌ Could not send email: ${err.message}`;
+                                }
+                            }
+                        }
+                    } else if (name === "email_list_drafts") {
+                        if (!dbUser) {
+                            resultText = "⚠️ Please link your account in the web dashboard first.";
+                        } else {
+                            const drafts = db.getUserEmailDrafts(dbUser.id, "draft");
+                            resultText = formatDraftListForWhatsApp(drafts);
+                        }
+                    } else if (name === "drive_list_files") {
+                        const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                        const effDrive = getEffectiveDriveConfig(dConf);
+                        if (!effDrive.isConfigured) {
+                            resultText = "⚠️ Google Drive is not connected yet. Please connect your Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const filesResult = await listDriveFiles(dConf, {
+                                    folderId: args.folder_id || undefined,
+                                    pageSize: args.max_results || 10
+                                });
+                                resultText = formatDriveFilesForWhatsApp(filesResult);
+                            } catch (err) {
+                                resultText = `❌ Error loading Google Drive: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "drive_search_files") {
+                        const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                        const effDrive = getEffectiveDriveConfig(dConf);
+                        if (!effDrive.isConfigured) {
+                            resultText = "⚠️ Google Drive is not connected yet. Please connect your Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const searchResult = await searchDriveFiles(dConf, {
+                                    query: args.query,
+                                    pageSize: args.max_results || 10
+                                });
+                                resultText = formatDriveFilesForWhatsApp(searchResult);
+                            } catch (err) {
+                                resultText = `❌ Error searching Google Drive: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "drive_create_folder") {
+                        const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                        const effDrive = getEffectiveDriveConfig(dConf);
+                        if (!effDrive.isConfigured) {
+                            resultText = "⚠️ Google Drive is not connected yet. Please link your Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                const folder = await createDriveFolder(dConf, {
+                                    folderName: args.folder_name
+                                });
+                                resultText = formatFolderCreatedForWhatsApp(folder);
+                            } catch (err) {
+                                resultText = `❌ Could not create Google Drive folder: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "drive_share_file") {
+                        const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                        const effDrive = getEffectiveDriveConfig(dConf);
+                        if (!effDrive.isConfigured) {
+                            resultText = "⚠️ Google Drive is not connected yet.";
+                        } else {
+                            try {
+                                let fileId = args.file_id;
+                                if (!fileId && args.search_name) {
+                                    const searchRes = await listDriveFiles(dConf, { query: args.search_name, pageSize: 3 });
+                                    if (searchRes.files && searchRes.files.length > 0) {
+                                        fileId = searchRes.files[0].id;
+                                    }
+                                }
+                                if (!fileId) {
+                                    resultText = `⚠️ Could not find file "${args.search_name || ""}" to share on Google Drive.`;
+                                } else {
+                                    const shared = await shareDriveFile(dConf, { fileId });
+                                    resultText = `🔗 *Google Drive Share Link:*\n\n• *File:* ${shared.name}\n• *Link:* ${shared.webViewLink}\n• *Access:* Anyone with link can view`;
+                                }
+                            } catch (err) {
+                                resultText = `❌ Could not share Google Drive file: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "drive_delete_file") {
+                        const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                        const effDrive = getEffectiveDriveConfig(dConf);
+                        if (!effDrive.isConfigured) {
+                            resultText = "⚠️ Google Drive is not connected yet.";
+                        } else {
+                            try {
+                                const deleted = await deleteDriveFile(dConf, {
+                                    fileId: args.file_id,
+                                    searchName: args.search_name
+                                });
+                                resultText = `🗑️ ${deleted.message}`;
+                            } catch (err) {
+                                resultText = `❌ Could not delete Google Drive file: ${err.message}`;
+                            }
+                        }
+                    } else if (name === "drive_upload_text") {
+                        const dConf = dbUser ? db.getUserIntegration(dbUser.id, "google_drive") : null;
+                        const effDrive = getEffectiveDriveConfig(dConf);
+                        if (!effDrive.isConfigured) {
+                            resultText = "⚠️ Google Drive is not connected yet. Please connect Google Drive in your web dashboard at http://localhost:3000 -> Integrations tab.";
+                        } else {
+                            try {
+                                let fName = (args.file_name || "Note").trim();
+                                if (!fName.includes(".")) fName += ".txt";
+                                const buffer = Buffer.from((args.content || "").trim(), "utf-8");
+                                const uploaded = await uploadDriveFile(dConf, {
+                                    fileName: fName,
+                                    mimeType: "text/plain",
+                                    buffer
+                                });
+                                resultText = formatUploadedFileForWhatsApp(uploaded);
+                            } catch (err) {
+                                resultText = `❌ Could not upload note to Google Drive: ${formatDriveApiError(err, effDrive)}`;
+                            }
+                        }
                     }
 
                     session.history.push({ role: "model", parts: [{ text: resultText }] });

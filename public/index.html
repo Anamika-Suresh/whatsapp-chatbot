@@ -500,6 +500,388 @@
 
       </div>
 
+      <!-- ============================================== -->
+      <!-- PLATFORM INTEGRATIONS (JIRA & GOOGLE CALENDAR) -->
+      <!-- ============================================== -->
+      <div class="integrations-section card-panel" id="integrations-section">
+        <div class="panel-header integrations-panel-header">
+          <div class="panel-title-group">
+            <div class="panel-icon">🔌</div>
+            <div>
+              <h3 class="panel-title">Platform Integrations & Extensions</h3>
+              <span class="panel-subtitle">Connect Jira and Google Calendar to use them directly through WhatsApp chatting</span>
+            </div>
+          </div>
+          <div class="dash-meta-badge" id="integrations-summary-badge">
+            <span class="status-indicator-dot online"></span>
+            <span id="integrations-status-text">Checking Integrations...</span>
+          </div>
+        </div>
+
+        <div class="integrations-grid">
+          
+          <!-- Card 1: Atlassian Jira Cloud -->
+          <div class="integration-card" id="card-jira">
+            <div class="int-card-top">
+              <div class="int-brand">
+                <div class="int-icon jira-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M11.53 2c0 2.4-1.97 4.35-4.4 4.35H2.8a.8.8 0 0 0-.8.8v4.33c0 2.4 1.97 4.35 4.4 4.35h4.33c2.4 0 4.35-1.97 4.35-4.4V2z" fill="#0052CC"/>
+                    <path d="M15.87 6.35c0 2.4-1.97 4.35-4.4 4.35H7.14a.8.8 0 0 0-.8.8v4.33c0 2.4 1.97 4.35 4.4 4.35h4.33c2.4 0 4.35-1.97 4.35-4.4V6.35z" fill="#2684FF"/>
+                  </svg>
+                </div>
+                <div>
+                  <h4 class="int-name">Atlassian Jira Cloud</h4>
+                  <span class="int-desc">Log bugs, view tickets, and update issue statuses from WhatsApp</span>
+                </div>
+              </div>
+              <span class="wa-badge unlinked" id="jira-status-badge">⚪ Not Connected</span>
+            </div>
+
+            <form id="form-jira-settings" class="int-form">
+              <div class="form-row-2col">
+                <div class="form-group-compact">
+                  <label for="jira-input-host">Jira Domain</label>
+                  <input type="text" id="jira-input-host" class="form-input" placeholder="e.g. acme.atlassian.net" required>
+                </div>
+                <div class="form-group-compact">
+                  <label for="jira-input-email">Account Email</label>
+                  <input type="email" id="jira-input-email" class="form-input" placeholder="name@company.com" required>
+                </div>
+              </div>
+
+              <div class="form-row-2col">
+                <div class="form-group-compact">
+                  <div class="label-with-link">
+                    <label for="jira-input-token">API Token</label>
+                    <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" class="helper-link">Generate Token ↗</a>
+                  </div>
+                  <input type="password" id="jira-input-token" class="form-input" placeholder="Paste your Jira API token...">
+                </div>
+                <div class="form-group-compact">
+                  <label for="jira-input-project">Default Project Key (Optional)</label>
+                  <input type="text" id="jira-input-project" class="form-input" placeholder="e.g. KAN or PROJ (not KAN-2)">
+                </div>
+              </div>
+
+              <div class="guide-tip" style="margin: 10px 0 14px 0; font-size: 0.8rem; line-height: 1.45; border-left: 3px solid #0052CC; background: rgba(0, 82, 204, 0.08); padding: 10px 14px; border-radius: 6px; color: var(--text-secondary);">
+                <strong>💡 Jira Quick Tips:</strong><br>
+                1. <strong>Jira Domain:</strong> Open Jira in your browser and check the address bar URL: <code>https://your-site.atlassian.net</code>. Enter <code>your-site.atlassian.net</code> (do not type "project"). View your site name at <a href="https://start.atlassian.com" target="_blank" style="color:#60a5fa; text-decoration: underline; font-weight:600;">start.atlassian.com ↗</a>.<br>
+                2. <strong>Project Key:</strong> Use the 2-5 letter uppercase project prefix (e.g. <strong>KAN</strong>, not <strong>KAN-2</strong>).
+              </div>
+
+              <div class="int-btn-row">
+                <button type="submit" class="btn btn-primary btn-sm" id="btn-save-jira">Save Jira</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-test-jira">Test Connection</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-preview-jira">Preview Tickets</button>
+                <button type="button" class="btn btn-danger-outline btn-sm hidden" id="btn-disconnect-jira">Disconnect</button>
+              </div>
+            </form>
+
+            <!-- Jira Preview Panel -->
+            <div class="int-preview-drawer hidden" id="jira-preview-drawer">
+              <div class="preview-drawer-header">
+                <span class="preview-title">Recent Jira Tickets</span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-close-jira-preview">✕ Close</button>
+              </div>
+              <div id="jira-tickets-container" class="preview-items-list">
+                <div class="preview-loading">Click "Preview Tickets" to load recent issues.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2: Google Calendar -->
+          <div class="integration-card" id="card-google-calendar">
+            <div class="int-card-top">
+              <div class="int-brand">
+                <div class="int-icon calendar-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <rect x="3" y="4" width="18" height="18" rx="3" fill="#4285F4"/>
+                    <path d="M3 9h18v13H3z" fill="#1e293b"/>
+                    <circle cx="8" cy="14" r="1.5" fill="#EA4335"/>
+                    <circle cx="12" cy="14" r="1.5" fill="#FBBC05"/>
+                    <circle cx="16" cy="14" r="1.5" fill="#34A853"/>
+                  </svg>
+                </div>
+                <div>
+                  <h4 class="int-name">Google Calendar & Google Meet</h4>
+                  <span class="int-desc">Check schedule, auto-generate Google Meet links, and book meetings via WhatsApp</span>
+                </div>
+              </div>
+              <span class="wa-badge unlinked" id="calendar-status-badge">⚪ Not Connected</span>
+            </div>
+
+            <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+              <span class="helper-text" style="color: var(--text-muted); font-size: 0.78rem;">💡 Tip: You can paste your entire JSON key into the box below or auto-detect it:</span>
+              <button type="button" class="btn btn-secondary btn-xs" id="btn-autodetect-calendar" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-weight: 600;">
+                ⚡ Auto-Fill Credentials
+              </button>
+            </div>
+
+            <form id="form-calendar-settings" class="int-form">
+              <div class="form-row-2col">
+                <div class="form-group-compact">
+                  <label for="cal-input-id">Calendar ID (Your Personal Email)</label>
+                  <input type="text" id="cal-input-id" class="form-input" placeholder="e.g. anamikasuresh963@gmail.com or primary" value="primary" required>
+                </div>
+                <div class="form-group-compact">
+                  <label for="cal-input-email">Service Account Email</label>
+                  <input type="email" id="cal-input-email" class="form-input" placeholder="whatsapp-bot@project.iam.gserviceaccount.com">
+                </div>
+              </div>
+
+              <div class="form-group-compact">
+                <div class="label-with-link">
+                  <label for="cal-input-key">Private Key (PEM) or Paste Entire JSON Key</label>
+                  <span class="helper-text">Accepts raw key or full .json file</span>
+                </div>
+                <textarea id="cal-input-key" class="form-input form-textarea" rows="2" placeholder="Paste private key or entire JSON key file content..."></textarea>
+              </div>
+
+              <div class="guide-tip" style="margin: 10px 0 14px 0; font-size: 0.8rem; line-height: 1.45; border-left: 3px solid #4285F4; background: rgba(66, 133, 244, 0.08); padding: 10px 14px; border-radius: 6px; color: var(--text-secondary);">
+                <strong>📌 Two Quick Google Setup Steps:</strong><br>
+                1. <strong>Enable Google Calendar API:</strong> In Google Cloud Console, click <a href="https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=named-nomad-469810-r7" target="_blank" style="color:#60a5fa; text-decoration: underline; font-weight: 600;">Enable Google Calendar API ↗</a>.<br>
+                2. <strong>Share your Google Calendar:</strong> In Google Calendar Settings on your phone or web, share your calendar with <code id="sa-email-hint" style="background: rgba(0,0,0,0.3); padding: 1px 4px; border-radius: 4px; color:#93c5fd;">whatsapp-bot@named-nomad-469810-r7.iam.gserviceaccount.com</code> with permission <strong>"Make changes to events"</strong> so the bot can add reminder dates!<br>
+                3. <strong>🎥 Google Meet Ready:</strong> Every meeting scheduled via WhatsApp automatically includes an authentic Google Meet link! Or click <strong>Instant G-Meet</strong> to launch a meeting right now.
+              </div>
+
+              <div class="int-btn-row">
+                <button type="submit" class="btn btn-primary btn-sm" id="btn-save-calendar">Save Calendar</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-test-calendar">Test Connection</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-instant-meet" style="border-color:#10b981; color:#10b981; font-weight: 600;">🎥 Instant G-Meet</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-preview-calendar">Preview Schedule</button>
+                <button type="button" class="btn btn-danger-outline btn-sm hidden" id="btn-disconnect-calendar">Disconnect</button>
+              </div>
+            </form>
+
+            <!-- Calendar Preview Panel -->
+            <div class="int-preview-drawer hidden" id="calendar-preview-drawer">
+              <div class="preview-drawer-header">
+                <span class="preview-title">Today's Scheduled Events</span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-close-calendar-preview">✕ Close</button>
+              </div>
+              <div id="calendar-events-container" class="preview-items-list">
+                <div class="preview-loading">Click "Preview Schedule" to load calendar events.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2b: Google Drive -->
+          <div class="integration-card" id="card-google-drive">
+            <div class="int-card-top">
+              <div class="int-brand">
+                <div class="int-icon drive-icon" style="background: rgba(15, 157, 88, 0.12); color: #0F9D58; display:flex; align-items:center; justify-content:center; width:40px; height:40px; border-radius:10px;">
+                  <svg width="24" height="24" viewBox="0 0 87.3 78" fill="none">
+                    <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                    <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00ac47"/>
+                    <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.5l5.85 10.15z" fill="#ea4335"/>
+                    <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                    <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+                    <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 28h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+                  </svg>
+                </div>
+                <div>
+                  <h4 class="int-name">Google Drive</h4>
+                  <span class="int-desc">Search documents, list cloud files & auto-upload WhatsApp media</span>
+                </div>
+              </div>
+              <span class="wa-badge unlinked" id="drive-status-badge">⚪ Not Connected</span>
+            </div>
+
+            <div style="margin: 8px 0 12px 0;">
+              <button type="button" class="btn btn-secondary btn-xs" id="btn-autodetect-drive" style="display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; font-weight: 600;">
+                ⚡ Auto-Fill Credentials
+              </button>
+            </div>
+
+            <form id="form-drive-settings" class="int-form">
+              <div class="form-group-compact">
+                <label for="drive-input-folder">Default Folder ID (Optional)</label>
+                <input type="text" id="drive-input-folder" class="form-input" placeholder="e.g. 1A2b3C4d... (Leave empty for root Drive)">
+              </div>
+
+              <div class="form-row-2col">
+                <div class="form-group-compact">
+                  <label for="drive-input-email">Service Account Email</label>
+                  <input type="email" id="drive-input-email" class="form-input" placeholder="bot@project.iam.gserviceaccount.com" required>
+                </div>
+                <div class="form-group-compact">
+                  <div class="label-with-link">
+                    <label for="drive-input-key">Private Key / JSON</label>
+                    <a href="https://console.cloud.google.com/iam-admin/serviceaccounts" target="_blank" class="helper-link">GCP Console ↗</a>
+                  </div>
+                  <input type="password" id="drive-input-key" class="form-input" placeholder="Paste private key (-----BEGIN PRIVATE KEY...)">
+                </div>
+              </div>
+
+              <div class="guide-tip" style="margin: 10px 0 14px 0; font-size: 0.8rem; line-height: 1.45; border-left: 3px solid #0F9D58; background: rgba(15, 157, 88, 0.08); padding: 10px 14px; border-radius: 6px; color: var(--text-secondary);">
+                <strong>💡 Google Drive Setup (Quick & Easy):</strong><br>
+                1. <strong>Enable Google Drive API:</strong> In Google Cloud Console, click <a href="https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=named-nomad-469810-r7" target="_blank" style="color:#34d399; text-decoration: underline; font-weight: 600;">Enable Google Drive API ↗</a>.<br>
+                2. <strong>Auto-Fill Credentials:</strong> Click <em>"⚡ Auto-Fill Credentials"</em> above to load your project's service account automatically!<br>
+                3. <strong>Share a Folder (Optional):</strong> If you want files stored in a specific folder, share that folder in Google Drive with <code id="drive-sa-email-hint" style="background: rgba(0,0,0,0.3); padding: 1px 4px; border-radius: 4px; color:#6ee7b7;">whatsapp-bot@named-nomad-469810-r7.iam.gserviceaccount.com</code> with "Editor" permission.
+              </div>
+
+              <div class="int-btn-row">
+                <button type="submit" class="btn btn-primary btn-sm" id="btn-save-drive">Save Drive</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-test-drive">Test Connection</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-preview-drive">Preview Files</button>
+                <button type="button" class="btn btn-danger-outline btn-sm hidden" id="btn-disconnect-drive">Disconnect</button>
+              </div>
+            </form>
+
+            <!-- Drive Preview Panel -->
+            <div class="int-preview-drawer hidden" id="drive-preview-drawer">
+              <div class="preview-drawer-header">
+                <span class="preview-title">Google Drive Files</span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-close-drive-preview">✕ Close</button>
+              </div>
+              <div id="drive-files-container" class="preview-items-list">
+                <div class="preview-loading">Click "Preview Files" to load Drive files.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 3: Asana Task Management -->
+          <div class="integration-card" id="card-asana">
+            <div class="int-card-top">
+              <div class="int-brand">
+                <div class="int-icon asana-icon">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="7" r="4" fill="#F06A6A"/>
+                    <circle cx="6" cy="17" r="4" fill="#F06A6A"/>
+                    <circle cx="18" cy="17" r="4" fill="#F06A6A"/>
+                  </svg>
+                </div>
+                <div class="int-info">
+                  <h4 class="int-name">Asana AI Task Manager</h4>
+                  <span class="int-desc">Sync personal to-dos, manage workspace projects & auto-create tasks</span>
+                </div>
+              </div>
+              <span class="wa-badge unlinked" id="asana-status-badge">⚪ Not Connected</span>
+            </div>
+
+            <form id="form-asana-settings" class="int-form">
+              <div class="form-group">
+                <div class="label-with-hint">
+                  <label for="asana-input-token">Personal Access Token (PAT)</label>
+                  <a href="https://app.asana.com/0/developer-console" target="_blank" class="field-hint-link">Get Token ↗</a>
+                </div>
+                <input type="password" id="asana-input-token" class="form-input" placeholder="Paste your Asana Personal Access Token...">
+              </div>
+
+              <div class="form-group">
+                <label for="asana-select-workspace">Workspace / Organization</label>
+                <select id="asana-select-workspace" class="form-input">
+                  <option value="">-- Click 'Test Connection' to Load Workspaces --</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                  <label for="asana-select-project" style="margin-bottom:0;">Default Project (Optional)</label>
+                  <button type="button" class="btn btn-ghost btn-xs" id="btn-asana-new-project" style="font-size:0.75rem; color:#f87171; padding:2px 8px; border:1px solid rgba(240,106,106,0.3); border-radius:4px;">+ New Project</button>
+                </div>
+                <select id="asana-select-project" class="form-input">
+                  <option value="">-- All Assigned Tasks (Default) --</option>
+                </select>
+              </div>
+
+              <div class="int-helper-alert" style="margin: 12px 0 16px; font-size: 0.8rem; line-height: 1.45; color: var(--text-muted); background: rgba(240, 106, 106, 0.08); padding: 10px 14px; border-radius: var(--radius-sm); border-left: 3px solid #f06a6a;">
+                <strong>💡 Asana Token Setup (30 Seconds):</strong><br>
+                1. Open <a href="https://app.asana.com/0/developer-console" target="_blank" style="color:#f87171; text-decoration: underline; font-weight: 600;">Asana Developer Console ↗</a>.<br>
+                2. Under <strong>Personal access tokens</strong>, click <strong>+ New access token</strong>.<br>
+                3. Name it <code>Anam WhatsApp Bot</code>, copy the token, and paste it above!
+              </div>
+
+              <div class="int-btn-row">
+                <button type="submit" class="btn btn-primary btn-sm" id="btn-save-asana">Save Asana</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-test-asana">Test Connection</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-preview-asana">Preview Tasks</button>
+                <button type="button" class="btn btn-danger-outline btn-sm hidden" id="btn-disconnect-asana">Disconnect</button>
+              </div>
+            </form>
+
+            <!-- Asana Preview Panel -->
+            <div class="int-preview-drawer hidden" id="asana-preview-drawer">
+              <div class="preview-drawer-header">
+                <span class="preview-title">Recent Asana Tasks</span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-close-asana-preview">✕ Close</button>
+              </div>
+              <div id="asana-tasks-container" class="preview-items-list">
+                <div class="preview-loading">Click "Preview Tasks" to load your Asana to-dos.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Email / Gmail Integration Card -->
+          <div class="integration-card" id="card-email">
+            <div class="int-card-top">
+              <div class="int-brand">
+                <div class="int-icon email-icon" style="background: rgba(234, 67, 53, 0.15); color: #ea4335; display:flex; align-items:center; justify-content:center; width:40px; height:40px; border-radius:10px;">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
+                    <polyline points="22,6 12,13 2,6"/>
+                  </svg>
+                </div>
+                <div class="int-info">
+                  <h4 class="int-name">Gmail & Email Assistant</h4>
+                  <span class="int-desc">Draft, review, and send professional emails directly via WhatsApp</span>
+                </div>
+              </div>
+              <span class="wa-badge unlinked" id="email-status-badge">⚪ Not Connected</span>
+            </div>
+
+            <form id="form-email-settings" class="int-form">
+              <div class="form-group">
+                <label for="email-input-address">Gmail Address</label>
+                <input type="email" id="email-input-address" class="form-input" placeholder="e.g. yourname@gmail.com">
+              </div>
+
+              <div class="form-group">
+                <div class="label-with-hint">
+                  <label for="email-input-password">16-Character Google App Password</label>
+                  <a href="https://myaccount.google.com/apppasswords" target="_blank" class="field-hint-link">Get App Password ↗</a>
+                </div>
+                <input type="password" id="email-input-password" class="form-input" placeholder="e.g. abcd efgh ijkl mnop">
+              </div>
+
+              <div class="form-group">
+                <label for="email-input-sender-name">Sender Display Name (Optional)</label>
+                <input type="text" id="email-input-sender-name" class="form-input" placeholder="e.g. Anamika Suresh">
+              </div>
+
+              <div class="int-helper-alert" style="margin: 12px 0 16px; font-size: 0.8rem; line-height: 1.45; color: var(--text-muted); background: rgba(234, 67, 53, 0.08); padding: 10px 14px; border-radius: var(--radius-sm); border-left: 3px solid #ea4335;">
+                <strong>💡 Quick 30-Second Google App Password Setup:</strong><br>
+                1. Make sure 2-Step Verification is turned ON in your Google Account.<br>
+                2. Open <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#ea4335; text-decoration: underline; font-weight: 600;">Google App Passwords ↗</a>.<br>
+                3. App name: <code>Anam WhatsApp Bot</code> &rarr; Click <strong>Create</strong>.<br>
+                4. Copy the 16-letter password (spaces are automatically cleaned) and paste above!
+              </div>
+
+              <div class="int-btn-row">
+                <button type="submit" class="btn btn-primary btn-sm" id="btn-save-email">Save Email</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-test-email">Test Connection</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-send-test-email">Send Test Email</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-preview-drafts">View Drafts</button>
+                <button type="button" class="btn btn-danger-outline btn-sm hidden" id="btn-disconnect-email">Disconnect</button>
+              </div>
+            </form>
+
+            <!-- Email Drafts Preview Drawer -->
+            <div class="int-preview-drawer hidden" id="email-preview-drawer">
+              <div class="preview-drawer-header">
+                <span class="preview-title">Saved Email Drafts</span>
+                <button type="button" class="btn btn-ghost btn-xs" id="btn-close-email-preview">✕ Close</button>
+              </div>
+              <div id="email-drafts-container" class="preview-items-list">
+                <div class="preview-loading">Click "View Drafts" to view your pending email drafts.</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
       <!-- Quick Command Cheatsheet in Dashboard -->
       <div class="dash-cheatsheet-card card-panel">
         <div class="cheatsheet-header">
@@ -507,6 +889,42 @@
           <span class="cheatsheet-tag">Always Active</span>
         </div>
         <div class="quick-cmd-chips">
+          <div class="cmd-chip" onclick="copyText('Hey Anam what is on my calendar today?')">
+            <code>Hey Anam what's on my calendar today?</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam schedule meeting with Team tomorrow at 3pm')">
+            <code>Hey Anam schedule meeting with Team tomorrow at 3pm</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam what are my Jira tickets?')">
+            <code>Hey Anam what are my Jira tickets?</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam create a Jira bug: payment gateway error on checkout')">
+            <code>Hey Anam create a Jira bug...</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('jira close PROJ-101')">
+            <code>jira close PROJ-101</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('Hey Anam show my Google Drive files')">
+            <code>Hey Anam show my Google Drive files</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('drive search report')">
+            <code>drive search report</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('drive help')">
+            <code>drive help</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
+          <div class="cmd-chip" onclick="copyText('!integrations')">
+            <code>!integrations</code>
+            <span class="chip-copy-hint">Click to copy</span>
+          </div>
           <div class="cmd-chip" onclick="copyText('Hey Anam remind me at 8:30pm to check email')">
             <code>Hey Anam remind me at 8:30pm to check email</code>
             <span class="chip-copy-hint">Click to copy</span>
@@ -517,14 +935,6 @@
           </div>
           <div class="cmd-chip" onclick="copyText('Hey Anam done 1')">
             <code>Hey Anam done 1</code>
-            <span class="chip-copy-hint">Click to copy</span>
-          </div>
-          <div class="cmd-chip" onclick="copyText('Hey Anam add Buy Groceries to list with description: milk, bread, eggs')">
-            <code>Hey Anam add Buy Groceries to list...</code>
-            <span class="chip-copy-hint">Click to copy</span>
-          </div>
-          <div class="cmd-chip" onclick="copyText('!account')">
-            <code>!account</code>
             <span class="chip-copy-hint">Click to copy</span>
           </div>
         </div>

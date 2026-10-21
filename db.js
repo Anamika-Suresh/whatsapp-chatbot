@@ -56,12 +56,39 @@ db.exec(`
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS user_integrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    config TEXT NOT NULL,
+    is_enabled INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, platform),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS email_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    recipient TEXT NOT NULL,
+    subject TEXT,
+    body TEXT,
+    status TEXT DEFAULT 'draft',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
   CREATE INDEX IF NOT EXISTS idx_users_token ON users(auth_token);
   CREATE INDEX IF NOT EXISTS idx_users_whatsapp ON users(whatsapp_jid);
   CREATE INDEX IF NOT EXISTS idx_todos_user ON todos(user_id);
   CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders(user_id);
   CREATE INDEX IF NOT EXISTS idx_reminders_pending ON reminders(status, target_timestamp);
+  CREATE INDEX IF NOT EXISTS idx_integrations_user ON user_integrations(user_id);
+  CREATE INDEX IF NOT EXISTS idx_integrations_platform ON user_integrations(user_id, platform);
+  CREATE INDEX IF NOT EXISTS idx_email_drafts_user ON email_drafts(user_id, status);
 `);
 
 /**
@@ -335,6 +362,137 @@ export function getReminderById(id) {
   return db.prepare("SELECT * FROM reminders WHERE id = ?").get(Number(id)) || null;
 }
 
+// ---------------- USER INTEGRATIONS ----------------
+
+export function getUserIntegration(userId, platform) {
+  const row = db.prepare(`
+    SELECT * FROM user_integrations 
+    WHERE user_id = ? AND platform = ?
+  `).get(userId, platform);
+
+  if (!row) return null;
+  try {
+    const config = JSON.parse(row.config);
+    return {
+      id: row.id,
+      userId: row.user_id,
+      platform: row.platform,
+      isEnabled: Boolean(row.is_enabled),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      ...config
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function getAllUserIntegrations(userId) {
+  const rows = db.prepare(`
+    SELECT * FROM user_integrations 
+    WHERE user_id = ?
+  `).all(userId) || [];
+
+  return rows.map(row => {
+    let parsedConfig = {};
+    try { parsedConfig = JSON.parse(row.config); } catch {}
+    return {
+      id: row.id,
+      platform: row.platform,
+      isEnabled: Boolean(row.is_enabled),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      config: parsedConfig
+    };
+  });
+}
+
+export function saveUserIntegration(userId, platform, configObj, isEnabled = 1) {
+  const now = new Date().toISOString();
+  const configStr = JSON.stringify(configObj || {});
+
+  const existing = db.prepare(`
+    SELECT id FROM user_integrations 
+    WHERE user_id = ? AND platform = ?
+  `).get(userId, platform);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE user_integrations 
+      SET config = ?, is_enabled = ?, updated_at = ?
+      WHERE id = ?
+    `).run(configStr, isEnabled ? 1 : 0, now, existing.id);
+  } else {
+    db.prepare(`
+      INSERT INTO user_integrations (user_id, platform, config, is_enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(userId, platform, configStr, isEnabled ? 1 : 0, now, now);
+  }
+
+  return getUserIntegration(userId, platform);
+}
+
+export function deleteUserIntegration(userId, platform) {
+  db.prepare(`
+    DELETE FROM user_integrations 
+    WHERE user_id = ? AND platform = ?
+  `).run(userId, platform);
+  return true;
+}
+
+// ---------------- EMAIL DRAFTS ----------------
+
+export function createEmailDraft(userId, recipient, subject = "", body = "") {
+  const now = new Date().toISOString();
+  const res = db.prepare(`
+    INSERT INTO email_drafts (user_id, recipient, subject, body, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'draft', ?, ?)
+  `).run(userId, recipient.trim(), (subject || "").trim(), (body || "").trim(), now, now);
+  return getEmailDraftById(res.lastInsertRowid, userId);
+}
+
+export function getUserEmailDrafts(userId, status = "draft") {
+  return db.prepare(`
+    SELECT * FROM email_drafts 
+    WHERE user_id = ? AND status = ?
+    ORDER BY id DESC
+  `).all(userId, status) || [];
+}
+
+export function getEmailDraftById(id, userId) {
+  return db.prepare(`
+    SELECT * FROM email_drafts 
+    WHERE id = ? AND user_id = ?
+  `).get(id, userId) || null;
+}
+
+export function updateEmailDraft(id, userId, updates = {}) {
+  const current = getEmailDraftById(id, userId);
+  if (!current) return null;
+
+  const now = new Date().toISOString();
+  const recipient = updates.recipient !== undefined ? updates.recipient : current.recipient;
+  const subject = updates.subject !== undefined ? updates.subject : current.subject;
+  const body = updates.body !== undefined ? updates.body : current.body;
+  const status = updates.status !== undefined ? updates.status : current.status;
+
+  db.prepare(`
+    UPDATE email_drafts
+    SET recipient = ?, subject = ?, body = ?, status = ?, updated_at = ?
+    WHERE id = ? AND user_id = ?
+  `).run(recipient, subject, body, status, now, id, userId);
+
+  return getEmailDraftById(id, userId);
+}
+
+export function deleteEmailDraft(id, userId) {
+  db.prepare(`
+    DELETE FROM email_drafts
+    WHERE id = ? AND user_id = ?
+  `).run(id, userId);
+  return true;
+}
+
 export default {
   createUser,
   getUserByEmail,
@@ -363,6 +521,15 @@ export default {
   getSystemStats,
   normalizeToken,
   generateToken,
-  extractPhoneFromJid
+  extractPhoneFromJid,
+  getUserIntegration,
+  getAllUserIntegrations,
+  saveUserIntegration,
+  deleteUserIntegration,
+  createEmailDraft,
+  getUserEmailDrafts,
+  getEmailDraftById,
+  updateEmailDraft,
+  deleteEmailDraft
 };
 
